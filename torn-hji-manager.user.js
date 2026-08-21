@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.3.3
+// @version      0.3.4
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -11,101 +11,39 @@
 // @grant        GM_setValue
 // @connect      api.torn.com
 // @run-at       document-idle
-// @downloadURL  https://raw.githubusercontent.com/DooBiiE/Torn-Happy-Jump-Insurance/main/torn-hji-manager.user.js
-// @updateURL    https://raw.githubusercontent.com/DooBiiE/Torn-Happy-Jump-Insurance/main/torn-hji-manager.user.js
+// @downloadURL  https://raw.githubusercontent.com/YOUR_GITHUB/YOUR_REPO/main/torn-hji-manager.user.js
+// @updateURL    https://raw.githubusercontent.com/YOUR_GITHUB/YOUR_REPO/main/torn-hji-manager.user.js
 // ==/UserScript==
 
 (() => {
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.3.3';
+    const VERSION = '0.3.4';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const API_BASE = 'https://api.torn.com/v2';
 
-    function decodeStoredValue(value, fallback) {
-        if (value === undefined || value === null || value === '') return fallback;
-
-        // Torn PDA/userscript engines may return JSON values as strings rather than
-        // preserving the original array/object type. Decode up to two layers.
-        let out = value;
-        for (let i = 0; i < 2 && typeof out === 'string'; i++) {
-            const s = out.trim();
-            if (!s || (!s.startsWith('{') && !s.startsWith('[') && !s.startsWith('"'))) break;
-            try { out = JSON.parse(s); } catch { break; }
-        }
-
-        // Some wrappers expose the actual stored value inside a `value` property.
-        if (out && typeof out === 'object' && !Array.isArray(out) &&
-            Object.keys(out).length === 1 && Object.prototype.hasOwnProperty.call(out, 'value')) {
-            return decodeStoredValue(out.value, fallback);
-        }
-
-        return out;
-    }
-
-    function decodeStoredValue(value, fallback) {
-        if (value === undefined || value === null || value === '') return fallback;
-
-        let out = value;
-
-        // Torn PDA may return a stored array/object as JSON text.
-        for (let i = 0; i < 3 && typeof out === 'string'; i++) {
-            const s = out.trim();
-            if (!s) return fallback;
-            if (!['{', '[', '"'].includes(s[0])) break;
-            try { out = JSON.parse(s); } catch { break; }
-        }
-
-        // Be tolerant of wrappers that return { value: ... }.
-        if (out && typeof out === 'object' && !Array.isArray(out) &&
-            Object.keys(out).length === 1 &&
-            Object.prototype.hasOwnProperty.call(out, 'value')) {
-            return decodeStoredValue(out.value, fallback);
-        }
-
-        return out;
-    }
-
     const storage = {
         get(key, fallback) {
             const full = PREFIX + key;
-
             try {
                 if (typeof GM_getValue === 'function') {
                     const v = GM_getValue(full, undefined);
-                    if (v !== undefined && !(v && typeof v.then === 'function')) {
-                        return decodeStoredValue(v, fallback);
-                    }
+                    if (v !== undefined) return v;
                 }
-            } catch (e) {
-                console.warn(`[HJI] GM_getValue failed for ${key}; using localStorage.`, e);
-            }
-
+            } catch {}
             try {
                 const raw = localStorage.getItem(full);
-                return raw == null ? fallback : decodeStoredValue(raw, fallback);
-            } catch (e) {
-                console.warn(`[HJI] localStorage read failed for ${key}.`, e);
+                return raw == null ? fallback : JSON.parse(raw);
+            } catch {
                 return fallback;
             }
         },
-
         set(key, value) {
             const full = PREFIX + key;
-
-            // Always store JSON text. This is consistent between Tampermonkey and Torn PDA.
-            const encoded = JSON.stringify(value);
-
-            try {
-                if (typeof GM_setValue === 'function') GM_setValue(full, encoded);
-            } catch (e) {
-                console.warn(`[HJI] GM_setValue failed for ${key}; localStorage still used.`, e);
-            }
-
-            try { localStorage.setItem(full, encoded); }
-            catch (e) { console.warn(`[HJI] localStorage write failed for ${key}.`, e); }
+            try { if (typeof GM_setValue === 'function') GM_setValue(full, value); } catch {}
+            try { localStorage.setItem(full, JSON.stringify(value)); } catch {}
         }
     };
 
@@ -114,225 +52,6 @@
     const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const money = n => Number(n || 0).toLocaleString('en-GB', {maximumFractionDigits: 0});
     const dateOnly = v => v ? new Date(v).toLocaleDateString('en-GB') : '—';
-
-    const encodeSetup = obj => {
-        const bytes = new TextEncoder().encode(JSON.stringify(obj));
-        let binary = '';
-        bytes.forEach(b => binary += String.fromCharCode(b));
-        return 'HJI1.' + btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-    };
-
-    async function copyText(text) {
-        try {
-            await navigator.clipboard.writeText(text);
-            return true;
-        } catch {}
-        const ta = document.createElement('textarea');
-        ta.value = text;
-        ta.style.position = 'fixed';
-        ta.style.opacity = '0';
-        document.body.appendChild(ta);
-        ta.select();
-        let ok = false;
-        try { ok = document.execCommand('copy'); } catch {}
-        ta.remove();
-        return ok;
-    }
-
-    function loadPosition(key) {
-        const pos = storage.get(key, null);
-        if (!pos || !Number.isFinite(pos.left) || !Number.isFinite(pos.top)) return null;
-        return pos;
-    }
-
-    function makeDraggable(el, handle, storageKey, clickHandler = null) {
-        const saved = loadPosition(storageKey);
-        if (saved) {
-            el.style.left = `${Math.max(0, Math.min(saved.left, window.innerWidth - 45))}px`;
-            el.style.top = `${Math.max(0, Math.min(saved.top, window.innerHeight - 45))}px`;
-            el.style.right = 'auto';
-            el.style.bottom = 'auto';
-            el.style.transform = 'none';
-        }
-
-        let dragging = false, moved = false;
-        let startX = 0, startY = 0, startLeft = 0, startTop = 0;
-
-        const point = e => {
-            const t = e.touches?.[0] || e.changedTouches?.[0] || e;
-            return { x: t.clientX, y: t.clientY };
-        };
-
-        const begin = e => {
-            // Header buttons should still work; the launcher itself is intentionally draggable.
-            if (handle !== el && e.target.closest?.('button,input,select,textarea,a')) return;
-            if (e.type === 'mousedown' && e.button !== 0) return;
-
-            const p = point(e);
-            const r = el.getBoundingClientRect();
-            dragging = true;
-            moved = false;
-            startX = p.x;
-            startY = p.y;
-            startLeft = r.left;
-            startTop = r.top;
-
-            // Remove centering transform before applying absolute drag coordinates.
-            el.style.left = `${r.left}px`;
-            el.style.top = `${r.top}px`;
-            el.style.right = 'auto';
-            el.style.bottom = 'auto';
-            el.style.transform = 'none';
-
-            if (e.cancelable) e.preventDefault();
-        };
-
-        const move = e => {
-            if (!dragging) return;
-            const p = point(e);
-            const dx = p.x - startX;
-            const dy = p.y - startY;
-            if (Math.abs(dx) + Math.abs(dy) > 6) moved = true;
-
-            const visibleW = Math.min(el.offsetWidth || 60, 60);
-            const visibleH = Math.min(el.offsetHeight || 40, 40);
-            const left = Math.max(0, Math.min(startLeft + dx, window.innerWidth - visibleW));
-            const top = Math.max(0, Math.min(startTop + dy, window.innerHeight - visibleH));
-            el.style.left = `${left}px`;
-            el.style.top = `${top}px`;
-
-            if (e.cancelable) e.preventDefault();
-        };
-
-        const finish = e => {
-            if (!dragging) return;
-            dragging = false;
-            const r = el.getBoundingClientRect();
-            storage.set(storageKey, { left: Math.round(r.left), top: Math.round(r.top) });
-            if (!moved && clickHandler) clickHandler();
-            if (e?.cancelable && moved) e.preventDefault();
-        };
-
-        handle.style.touchAction = 'none';
-        handle.addEventListener('mousedown', begin);
-        window.addEventListener('mousemove', move, { passive: false });
-        window.addEventListener('mouseup', finish);
-        handle.addEventListener('touchstart', begin, { passive: false });
-        window.addEventListener('touchmove', move, { passive: false });
-        window.addEventListener('touchend', finish, { passive: false });
-        window.addEventListener('touchcancel', finish, { passive: false });
-    }
-
-    function makeResizable(el, grip, storageKey) {
-        const saved = storage.get(storageKey, null);
-        if (saved?.width && saved?.height) {
-            el.style.width = `${Math.min(saved.width, window.innerWidth * 0.97)}px`;
-            el.style.height = `${Math.min(saved.height, window.innerHeight * 0.92)}px`;
-        }
-
-        let resizing = false, startX = 0, startY = 0, startW = 0, startH = 0;
-        const point = e => {
-            const t = e.touches?.[0] || e.changedTouches?.[0] || e;
-            return { x: t.clientX, y: t.clientY };
-        };
-        const begin = e => {
-            const p = point(e);
-            const r = el.getBoundingClientRect();
-            resizing = true;
-            startX = p.x; startY = p.y; startW = r.width; startH = r.height;
-            if (e.cancelable) e.preventDefault();
-            e.stopPropagation?.();
-        };
-        const move = e => {
-            if (!resizing) return;
-            const p = point(e);
-            const minW = 300, minH = 300;
-            const maxW = Math.max(minW, window.innerWidth * 0.97);
-            const maxH = Math.max(minH, window.innerHeight * 0.92);
-            el.style.width = `${Math.max(minW, Math.min(startW + p.x - startX, maxW))}px`;
-            el.style.height = `${Math.max(minH, Math.min(startH + p.y - startY, maxH))}px`;
-            if (e.cancelable) e.preventDefault();
-        };
-        const finish = () => {
-            if (!resizing) return;
-            resizing = false;
-            const r = el.getBoundingClientRect();
-            storage.set(storageKey, { width: Math.round(r.width), height: Math.round(r.height) });
-        };
-
-        grip.addEventListener('mousedown', begin);
-        window.addEventListener('mousemove', move, { passive: false });
-        window.addEventListener('mouseup', finish);
-        grip.addEventListener('touchstart', begin, { passive: false });
-        window.addEventListener('touchmove', move, { passive: false });
-        window.addEventListener('touchend', finish);
-        window.addEventListener('touchcancel', finish);
-    }
-
-    function buildSetupCode(policy) {
-        const customer = getCustomer(policy.customerId);
-        const tier = getTier(policy.tierId);
-        if (!customer || !tier) throw new Error('Customer or tier is missing.');
-        if (!state.settings.providerId || !state.settings.providerName) {
-            throw new Error('Set the provider Torn name and Torn ID in Settings first.');
-        }
-
-        return encodeSetup({
-            schema: 'torn-hji-policy',
-            version: 1,
-            issuedAt: nowISO(),
-            provider: {
-                id: String(state.settings.providerId),
-                name: state.settings.providerName
-            },
-            insured: {
-                id: String(customer.tornId),
-                name: customer.name
-            },
-            policy: {
-                id: policy.id,
-                tierId: tier.id,
-                tierName: tier.name,
-                type: tier.type,
-                coverage: tier.coverage,
-                maxDvds: Number(tier.maxDvds || 0),
-                startDate: policy.startDate || null,
-                endDate: policy.endDate || null,
-                cashPrice: Number(tier.cashPrice || 0),
-                itemName: tier.itemName || '',
-                itemQty: Number(tier.itemQty || 0)
-            }
-        });
-    }
-
-    function setupCodeModal(policy) {
-        let code;
-        try { code = buildSetupCode(policy); }
-        catch (e) { alert(e.message); return; }
-
-        const customer = getCustomer(policy.customerId);
-        const tier = getTier(policy.tierId);
-        const modal = createModal('Client setup code');
-        modal.content.innerHTML += `
-          <div class="hji-help">
-            <strong>What is this?</strong>
-            <p>Send this setup code to the insured player. Their HJI Client can import it to link this policy to you.</p>
-            <p>The code contains provider, insured-player and policy details only. <b>Your API key is never included.</b></p>
-          </div>
-          <div class="hji-card">
-            <strong>${esc(customer?.name || '')} [${esc(customer?.tornId || '')}]</strong>
-            <p>${esc(tier?.name || '')} · ${esc(tier?.coverage || '')}</p>
-          </div>
-          <label style="display:flex;flex-direction:column;gap:5px;margin-top:10px">
-            Setup code
-            <textarea id="hji-setup-code" readonly style="min-height:130px">${esc(code)}</textarea>
-          </label>`;
-        modal.el.querySelector('[data-save]').textContent = 'Copy code';
-        modal.addSave(async () => {
-            await copyText(code);
-            alert('Client setup code copied.');
-        });
-    }
 
     const defaultTiers = [
         {
@@ -385,130 +104,23 @@
         }
     ];
 
-    function normalizeCollection(value, name) {
-        const decoded = decodeStoredValue(value, []);
-
-        if (Array.isArray(decoded)) return decoded;
-
-        // Recover an object containing numeric/indexed records rather than crashing.
-        if (decoded && typeof decoded === 'object') {
-            const values = Object.values(decoded);
-            if (values.length && values.every(v => v && typeof v === 'object')) {
-                console.warn(`[HJI Manager] Recovered ${name} from object storage format.`);
-                return values;
-            }
-        }
-
-        if (decoded !== undefined && decoded !== null && decoded !== '') {
-            console.warn(`[HJI Manager] Invalid ${name} storage value ignored:`, decoded);
-        }
-        return [];
-    }
-
-    function normalizeSettings(value) {
-        const defaults = {
-            providerId: '',
-            providerName: '',
-            apiKey: '',
-            dueSoonDays: 3,
-            claimPollMinutes: 10,
-            lastMailScan: null,
-            apiAccountId: '',
-            apiAccountName: ''
-        };
-        const decoded = decodeStoredValue(value, {});
-        return decoded && typeof decoded === 'object' && !Array.isArray(decoded)
-            ? { ...defaults, ...decoded }
-            : defaults;
-    }
-
-    function normalizeCollection(value, name) {
-        const decoded = decodeStoredValue(value, []);
-
-        if (Array.isArray(decoded)) return decoded;
-
-        // Some PDA storage layers turn arrays into {0:{...},1:{...}} objects.
-        if (decoded && typeof decoded === 'object') {
-            const entries = Object.entries(decoded);
-            if (entries.length && entries.every(([k]) => /^\d+$/.test(k))) {
-                console.warn(`[HJI Manager] Recovered ${name} from indexed-object storage.`);
-                return entries
-                    .sort((a,b) => Number(a[0]) - Number(b[0]))
-                    .map(([,v]) => v);
-            }
-        }
-
-        if (decoded !== undefined && decoded !== null && decoded !== '') {
-            console.warn(`[HJI Manager] Invalid ${name} value was reset safely.`, decoded);
-        }
-        return [];
-    }
-
-    function normalizeSettings(value) {
-        const defaults = {
+    let state = {
+        tiers: storage.get('tiers', null) || defaultTiers,
+        customers: storage.get('customers', []),
+        policies: storage.get('policies', []),
+        payments: storage.get('payments', []),
+        claims: storage.get('claims', []),
+        settings: storage.get('settings', {
             providerId: '',
             providerName: '',
             apiKey: '',
             dueSoonDays: 3,
             claimPollMinutes: 10,
             lastMailScan: null
-        };
-        const decoded = decodeStoredValue(value, {});
-        return decoded && typeof decoded === 'object' && !Array.isArray(decoded)
-            ? { ...defaults, ...decoded }
-            : defaults;
-    }
-
-    let state = {
-        tiers: normalizeCollection(storage.get('tiers', defaultTiers), 'tiers'),
-        customers: normalizeCollection(storage.get('customers', []), 'customers'),
-        policies: normalizeCollection(storage.get('policies', []), 'policies'),
-        payments: normalizeCollection(storage.get('payments', []), 'payments'),
-        claims: normalizeCollection(storage.get('claims', []), 'claims'),
-        settings: normalizeSettings(storage.get('settings', {}))
+        })
     };
 
-    if (!state.tiers.length) state.tiers = defaultTiers;
-
-    // Rewrite startup state into the stable JSON-text format immediately.
-    try {
-        storage.set('tiers', state.tiers);
-        storage.set('customers', state.customers);
-        storage.set('policies', state.policies);
-        storage.set('payments', state.payments);
-        storage.set('claims', state.claims);
-        storage.set('settings', state.settings);
-    } catch (e) {
-        console.warn('[HJI Manager] Startup normalization could not be persisted.', e);
-    }
-
-    // A truly empty/invalid tier store should still receive the built-in starter tiers.
-    if (!state.tiers.length) state.tiers = defaultTiers;
-
-    // Persist the normalized representation immediately so a PDA-specific storage
-    // shape cannot break the next page load.
-    function persistNormalizedState() {
-        try {
-            storage.set('tiers', state.tiers);
-            storage.set('customers', state.customers);
-            storage.set('policies', state.policies);
-            storage.set('payments', state.payments);
-            storage.set('claims', state.claims);
-            storage.set('settings', state.settings);
-        } catch (e) {
-            console.warn('[HJI Manager] Could not persist normalized startup state.', e);
-        }
-    }
-    persistNormalizedState();
-
     function saveAll() {
-        state.tiers = normalizeCollection(state.tiers, 'tiers');
-        state.customers = normalizeCollection(state.customers, 'customers');
-        state.policies = normalizeCollection(state.policies, 'policies');
-        state.payments = normalizeCollection(state.payments, 'payments');
-        state.claims = normalizeCollection(state.claims, 'claims');
-        state.settings = normalizeSettings(state.settings);
-
         storage.set('tiers', state.tiers);
         storage.set('customers', state.customers);
         storage.set('policies', state.policies);
@@ -522,40 +134,53 @@
         const s = document.createElement('style');
         s.id = 'hji-manager-style';
         s.textContent = `
-        #hji-launcher{position:fixed;left:16px;bottom:18px;z-index:999999;background:#20252b;color:#fff;border:1px solid #666;border-radius:999px;padding:10px 14px;font:600 13px Arial;box-shadow:0 3px 14px #0008;cursor:grab;user-select:none;touch-action:none}
+        :root{
+          --hji-bg:#202020;
+          --hji-panel:#2b2b2b;
+          --hji-border:#4a4a4a;
+          --hji-text:#e8e8e8;
+          --hji-muted:#aaa;
+          --hji-input:#181818;
+        }
+        #hji-launcher{position:fixed;left:16px;bottom:18px;z-index:999999;background:linear-gradient(#4a4a4a,#303030);color:#fff;border:1px solid #666;border-radius:5px;padding:9px 13px;font:600 13px Arial,sans-serif;box-shadow:0 2px 8px #0009;cursor:grab;user-select:none;touch-action:none}
         #hji-launcher:active{cursor:grabbing}
         #hji-overlay{position:fixed;inset:0;z-index:1000000;background:transparent;pointer-events:none}
-        #hji-app{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(980px,92vw);height:min(700px,82vh);min-width:320px;min-height:320px;max-width:98vw;max-height:94vh;background:#171a1f;color:#ddd;border:1px solid #555;border-radius:10px;overflow:hidden;font:14px Arial;display:flex;flex-direction:column;box-shadow:0 12px 35px #000b;pointer-events:auto;resize:both}
+        #hji-app{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(980px,92vw);height:min(700px,82vh);min-width:320px;min-height:320px;max-width:98vw;max-height:94vh;background:var(--hji-bg);color:var(--hji-text);border:1px solid #555;border-radius:7px;overflow:hidden;font:14px Arial,sans-serif;display:flex;flex-direction:column;box-shadow:0 12px 35px #000c;pointer-events:auto;resize:both}
         #hji-app.hji-compact{width:min(760px,88vw);height:min(560px,72vh)}
-        .hji-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:11px 13px;background:#23272e;border-bottom:1px solid #444;cursor:move;user-select:none;touch-action:none}
-        .hji-head h2{margin:0;color:#fff;font-size:18px}.hji-head-actions{display:flex;gap:6px}.hji-close,.hji-size{background:#3b414b;color:#fff;border:0;border-radius:6px;padding:7px 10px;cursor:pointer}
-        .hji-tabs{display:flex;gap:4px;overflow:auto;padding:8px;background:#1d2025;border-bottom:1px solid #393d43}
-        .hji-tab{white-space:nowrap;background:#2b3037;color:#ddd;border:1px solid #444;border-radius:6px;padding:8px 10px;cursor:pointer}.hji-tab.active{background:#555f6d;color:#fff}
-        .hji-body{padding:12px;overflow:auto;flex:1}.hji-grid{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:10px}
-        .hji-card{background:#22262c;border:1px solid #3d424a;border-radius:8px;padding:12px;margin-bottom:10px}.hji-card b{display:block;color:#fff;font-size:18px;margin-top:5px}
-        .hji-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}.hji-btn{background:#3a414b;color:#fff;border:1px solid #59616d;border-radius:6px;padding:8px 10px;cursor:pointer}.hji-btn.danger{background:#653535}.hji-btn.good{background:#315d3e}
-        .hji-table-wrap{overflow:auto;max-width:100%}.hji-table{width:100%;border-collapse:collapse;background:#20242a}.hji-table th,.hji-table td{padding:8px;border-bottom:1px solid #3b4047;text-align:left;vertical-align:top}.hji-table th{background:#2a2f36;color:#fff;position:sticky;top:0}
-        .hji-status{font-weight:700}.hji-active{color:#72d88b}.hji-due{color:#f5d06f}.hji-expired{color:#ff8585}.hji-pending{color:#f5d06f}
-        .hji-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.hji-form label{display:flex;flex-direction:column;gap:5px}.hji-form .wide{grid-column:1/-1}
-        .hji-form input,.hji-form select,.hji-form textarea{box-sizing:border-box;width:100%;background:#111419;color:#fff;border:1px solid #555;border-radius:6px;padding:9px}.hji-form textarea{min-height:80px}
-        .hji-modal-bg{position:absolute;inset:0;background:#000b;display:flex;align-items:center;justify-content:center;padding:12px;z-index:5}.hji-modal{width:min(620px,94%);max-height:88%;overflow:auto;background:#22262c;border:1px solid #666;border-radius:8px;padding:14px}
-        .hji-modal h3{margin-top:0;color:#fff}.hji-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}.hji-muted{color:#aaa;font-size:12px}.hji-pill{display:inline-block;padding:3px 7px;border-radius:999px;background:#343a42}
-        .hji-help{background:#1b2229;border:1px solid #405165;border-radius:8px;padding:10px;margin:8px 0 12px}.hji-help strong{color:#fff}.hji-help p{margin:5px 0}.hji-help details{margin-top:6px}.hji-help summary{cursor:pointer;font-weight:700;color:#dfe8f2}
-        .hji-resize-grip{position:absolute;right:0;bottom:0;width:28px;height:28px;z-index:20;cursor:nwse-resize;touch-action:none}.hji-resize-grip:after{content:'↘';position:absolute;right:5px;bottom:3px;color:#aaa;font-size:17px;}
-        .hji-info{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;background:#48515c;color:#fff;font-size:11px;font-weight:bold;cursor:help;margin-left:4px}
-        @media(max-width:700px){
-          #hji-launcher{left:9px;bottom:10px;padding:9px 12px}
-          #hji-app{width:92vw;height:76vh;max-height:84vh;min-height:300px;resize:both}
-          #hji-app.hji-compact{width:86vw;height:66vh}
-          .hji-grid{grid-template-columns:repeat(2,1fr)}.hji-form{grid-template-columns:1fr}.hji-form .wide{grid-column:auto}
-          .hji-table{font-size:12px}.hji-table th,.hji-table td{padding:6px}.hji-head h2{font-size:15px}
-        }
+        .hji-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;background:linear-gradient(#3b3b3b,#292929);border-bottom:1px solid #555;cursor:move;user-select:none;touch-action:none}
+        .hji-head h2{margin:0;color:#f5f5f5;font-size:18px}.hji-head-actions{display:flex;gap:6px}
+        .hji-close,.hji-size{background:#444;color:#f5f5f5;border:1px solid #666;border-radius:4px;padding:6px 9px;cursor:pointer}
+        .hji-tabs{display:flex;gap:3px;overflow:auto;padding:7px;background:#252525;border-bottom:1px solid #444}
+        .hji-tab{white-space:nowrap;background:#333;color:#ddd;border:1px solid #505050;border-radius:4px;padding:7px 10px;cursor:pointer}.hji-tab.active{background:#555;color:#fff;border-color:#777}
+        .hji-body{padding:12px;overflow:auto;flex:1;background:var(--hji-bg);color:var(--hji-text)}
+        .hji-grid{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:10px}
+        .hji-card{background:var(--hji-panel);border:1px solid var(--hji-border);border-radius:5px;padding:11px;margin-bottom:10px;color:var(--hji-text)}
+        .hji-card strong,.hji-card b{color:#fff}.hji-card b{display:block;font-size:18px;margin-top:5px}
+        .hji-toolbar{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:10px}
+        .hji-btn{background:linear-gradient(#4a4a4a,#333);color:#f5f5f5!important;border:1px solid #606060;border-radius:4px;padding:7px 10px;cursor:pointer;text-decoration:none!important}
+        .hji-btn.danger{background:linear-gradient(#8f4343,#683030);border-color:#a95656}.hji-btn.good{background:linear-gradient(#4f7e5e,#365942);border-color:#618e6c}.hji-btn.warn{background:linear-gradient(#8b713c,#665127);border-color:#a88b50}
+        .hji-table-wrap{overflow:auto;max-width:100%;border:1px solid #414141;border-radius:5px}
+        .hji-table{width:100%;border-collapse:collapse;background:#282828;color:var(--hji-text)}
+        .hji-table th,.hji-table td{padding:8px;border-bottom:1px solid #414141;text-align:left;vertical-align:top;color:var(--hji-text)}
+        .hji-table th{background:#383838;color:#fff;position:sticky;top:0;z-index:1}.hji-table a{color:#7fb5dc!important}
+        .hji-policy-row-active{background:#243329}.hji-policy-row-due{background:#403823}.hji-policy-row-expired{background:#422828}.hji-policy-row-cancelled{background:#303030;opacity:.72}.hji-policy-row-used{background:#30343a;opacity:.82}
+        .hji-status{font-weight:700}.hji-active{color:#75d28d!important}.hji-due{color:#f0c866!important}.hji-expired{color:#f18181!important}.hji-cancelled{color:#aaa!important}
+        .hji-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.hji-form label{display:flex;flex-direction:column;gap:5px;color:#ddd;font-weight:600}.hji-form .wide{grid-column:1/-1}
+        .hji-form input,.hji-form select,.hji-form textarea,.hji-modal input,.hji-modal select,.hji-modal textarea{box-sizing:border-box;width:100%;background:var(--hji-input)!important;color:#f2f2f2!important;border:1px solid #5a5a5a;border-radius:4px;padding:8px;-webkit-text-fill-color:#f2f2f2!important;caret-color:#fff}
+        .hji-form input::placeholder,.hji-form textarea::placeholder,.hji-modal input::placeholder,.hji-modal textarea::placeholder{color:#8e8e8e!important;-webkit-text-fill-color:#8e8e8e!important}
+        .hji-form select option,.hji-modal select option{background:#222;color:#f2f2f2}.hji-form textarea{min-height:80px}
+        .hji-modal-bg{position:absolute;inset:0;background:#000b;display:flex;align-items:center;justify-content:center;padding:12px;z-index:5}.hji-modal{width:min(620px,94%);max-height:88%;overflow:auto;background:#292929;color:var(--hji-text);border:1px solid #666;border-radius:6px;padding:14px}
+        .hji-modal h3{margin-top:0;color:#fff}.hji-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}.hji-muted{color:#aaa!important;font-size:12px}.hji-pill{display:inline-block;padding:3px 7px;border-radius:999px;background:#444;color:#ddd}
+        .hji-help{background:#252d33;border:1px solid #465966;border-radius:5px;padding:10px;margin:8px 0 12px;color:#e1e1e1}.hji-help strong{color:#fff}.hji-help p{margin:5px 0}.hji-help details{margin-top:6px}.hji-help summary{cursor:pointer;font-weight:700;color:#dceaf3}
+        .hji-info{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;background:#59636d;color:#fff;font-size:11px;font-weight:bold;cursor:help;margin-left:4px}
+        .hji-resize-grip{position:absolute;right:0;bottom:0;width:30px;height:30px;z-index:20;cursor:nwse-resize;touch-action:none}.hji-resize-grip:after{content:'↘';position:absolute;right:5px;bottom:3px;color:#bbb;font-size:18px}
+        @media(max-width:700px){#hji-launcher{left:9px;bottom:10px;padding:8px 11px}#hji-app{width:92vw;height:76vh;max-height:84vh;min-height:300px;resize:both}#hji-app.hji-compact{width:86vw;height:66vh}.hji-grid{grid-template-columns:repeat(2,1fr)}.hji-form{grid-template-columns:1fr}.hji-form .wide{grid-column:auto}.hji-table{font-size:12px}.hji-table th,.hji-table td{padding:6px}.hji-head h2{font-size:15px}}
         `;
         document.head.appendChild(s);
     }
 
     function policyStatus(p) {
-        if (p.status === 'cancelled') return ['Cancelled','hji-muted'];
+        if (p.status === 'cancelled') return ['Cancelled','hji-cancelled'];
         if (p.type === 'single') return p.used ? ['Used','hji-muted'] : ['Active','hji-active'];
         if (!p.endDate) return ['Active','hji-active'];
         const end = new Date(p.endDate).getTime();
@@ -564,6 +189,104 @@
         if (diff <= Number(state.settings.dueSoonDays || 3) * 86400000) return ['Due soon','hji-due'];
         return ['Active','hji-active'];
     }
+
+    function policyRowClass(p) {
+        const [label] = policyStatus(p);
+        if (label === 'Active') return 'hji-policy-row-active';
+        if (label === 'Due soon') return 'hji-policy-row-due';
+        if (label === 'Expired') return 'hji-policy-row-expired';
+        if (label === 'Cancelled') return 'hji-policy-row-cancelled';
+        if (label === 'Used') return 'hji-policy-row-used';
+        return '';
+    }
+
+    function renewalBaseDate(policy) {
+        const now = Date.now();
+        const currentEnd = policy.endDate ? new Date(policy.endDate).getTime() : 0;
+        // Renew from existing expiry if it is still in the future;
+        // otherwise renew from today so an expired policy doesn't gain free backdated cover.
+        return new Date(Math.max(now, currentEnd));
+    }
+
+    function renewPolicyModal(policy) {
+        const tier = getTier(policy.tierId);
+        const customer = getCustomer(policy.customerId);
+        if (!tier || tier.type !== 'monthly') return alert('Only time-based/monthly policies can be renewed.');
+
+        const modal = createModal('Renew policy');
+        const days = Number(tier.durationDays || 30);
+        const base = renewalBaseDate(policy);
+        const proposedEnd = new Date(base.getTime() + days * 86400000);
+
+        modal.content.innerHTML += `
+          <div class="hji-help">
+            <strong>Monthly renewal</strong>
+            <p>This keeps the existing policy and extends its expiry instead of creating a duplicate policy each month.</p>
+            <p>If the policy is still active, renewal extends from its current expiry. If it already expired, renewal starts from today.</p>
+          </div>
+          <div class="hji-card">
+            <p><b>Customer:</b> ${esc(customer?.name || 'Unknown')} [${esc(customer?.tornId || '')}]</p>
+            <p><b>Tier:</b> ${esc(tier.name)}</p>
+            <p><b>Current expiry:</b> ${dateOnly(policy.endDate)}</p>
+            <p><b>New expiry:</b> ${dateOnly(proposedEnd.toISOString())}</p>
+          </div>
+          <div class="hji-form">
+            <label>Renewal length (days)<input id="renew-days" inputmode="numeric" value="${days}"></label>
+            <label>Payment method
+              <select id="renew-method">
+                <option value="cash">Cash</option>
+                <option value="item" ${tier.itemName ? '' : 'disabled'}>Item${tier.itemName ? ` (${esc(tier.itemName)})` : ''}</option>
+              </select>
+            </label>
+            <label>Cash amount<input id="renew-cash" inputmode="numeric" value="${Number(tier.cashPrice || 0)}"></label>
+            <label>Item quantity<input id="renew-itemqty" inputmode="numeric" value="${Number(tier.itemQty || 0)}"></label>
+            <label class="wide">Renewal note<textarea id="renew-note" placeholder="Optional note"></textarea></label>
+          </div>`;
+
+        modal.el.querySelector('[data-save]').textContent = 'Renew policy';
+        modal.addSave(() => {
+            const renewalDays = Math.max(1, Number(modal.el.querySelector('#renew-days').value || days));
+            const renewalStart = renewalBaseDate(policy);
+            const newEnd = new Date(renewalStart.getTime() + renewalDays * 86400000);
+            const method = modal.el.querySelector('#renew-method').value;
+            const note = modal.el.querySelector('#renew-note').value.trim();
+
+            policy.endDate = newEnd.toISOString();
+            policy.status = 'active';
+            policy.used = false;
+            policy.renewals = Array.isArray(policy.renewals) ? policy.renewals : [];
+            policy.renewals.push({
+                id: uid('renewal'),
+                renewedAt: nowISO(),
+                fromDate: renewalStart.toISOString(),
+                toDate: newEnd.toISOString(),
+                days: renewalDays,
+                method,
+                amount: method === 'cash' ? Number(modal.el.querySelector('#renew-cash').value || 0) : 0,
+                itemName: method === 'item' ? (tier.itemName || '') : '',
+                itemQty: method === 'item' ? Number(modal.el.querySelector('#renew-itemqty').value || 0) : 0,
+                note
+            });
+
+            state.payments.push({
+                id: uid('payment'),
+                customerId: policy.customerId,
+                policyId: policy.id,
+                date: nowISO(),
+                method,
+                amount: method === 'cash' ? Number(modal.el.querySelector('#renew-cash').value || 0) : 0,
+                itemName: method === 'item' ? (tier.itemName || '') : '',
+                itemQty: method === 'item' ? Number(modal.el.querySelector('#renew-itemqty').value || 0) : 0,
+                notes: `Policy renewal: ${tier.name}${note ? ` — ${note}` : ''}`,
+                createdAt: nowISO()
+            });
+
+            saveAll();
+            modal.close();
+            renderTab();
+        });
+    }
+
 
     function getCustomer(id) { return state.customers.find(x => x.id === id); }
     function getTier(id) { return state.tiers.find(x => x.id === id); }
@@ -575,30 +298,17 @@
     function openApp(tab='dashboard') {
         injectStyles();
         currentTab = tab;
-        try {
-            if (overlay) overlay.remove();
-            overlay = document.createElement('div');
-            overlay.id = 'hji-overlay';
-            overlay.innerHTML = `<div id="hji-app">
-              <div class="hji-head">
-                <div><h2>🛡️ Happy Jump Insurance Manager</h2><div class="hji-muted">v${esc(VERSION)} · drag this header · resize from the lower-right corner</div></div>
-                <div class="hji-head-actions"><button class="hji-size" title="Toggle a smaller window">Size</button><button class="hji-close">Close</button></div>
-              </div>
-              <div class="hji-tabs"></div><div class="hji-body"></div><div class="hji-resize-grip" title="Drag to resize"></div>
-            </div>`;
-            document.body.appendChild(overlay);
-            const app = overlay.querySelector('#hji-app');
-            overlay.querySelector('.hji-close').onclick = () => { overlay.remove(); overlay=null; };
-            overlay.querySelector('.hji-size').onclick = () => app.classList.toggle('hji-compact');
-            makeDraggable(app, overlay.querySelector('.hji-head'), 'windowPos');
-            makeResizable(app, overlay.querySelector('.hji-resize-grip'), 'windowSize');
-            renderTabs();
-            renderTab();
-        } catch (e) {
-            console.error('[HJI Manager] UI render error:', e);
-            const body = overlay?.querySelector('.hji-body');
-            if (body) body.innerHTML = `<div class="hji-help"><strong>HJI UI error</strong><p>${esc(e?.message || e)}</p><p>Close and reopen the manager. If this repeats, copy the browser console error.</p></div>`;
-        }
+        if (overlay) overlay.remove();
+        overlay = document.createElement('div');
+        overlay.id = 'hji-overlay';
+        overlay.innerHTML = `<div id="hji-app">
+          <div class="hji-head"><div><h2>🛡️ Happy Jump Insurance Manager</h2><div class="hji-muted">v${esc(VERSION)} · local manager database</div></div><button class="hji-close">Close</button></div>
+          <div class="hji-tabs"></div><div class="hji-body"></div>
+        </div>`;
+        document.body.appendChild(overlay);
+        overlay.querySelector('.hji-close').onclick = () => { overlay.remove(); overlay=null; };
+        renderTabs();
+        renderTab();
     }
 
     function renderTabs() {
@@ -607,19 +317,13 @@
             ['payments','Payments'],['claims','Claims'],['tiers','Tiers'],['settings','Settings']
         ];
         const el = overlay.querySelector('.hji-tabs');
-        el.innerHTML = tabs.map(([id,label]) => `<button class="hji-tab ${id===currentTab?'active':''}" data-tab="${id}">${label}${id==='claims' ? ` (${normalizeCollection(state.claims, 'claims').filter(c=>c?.status==='submitted').length})` : ''}</button>`).join('');
+        el.innerHTML = tabs.map(([id,label]) => `<button class="hji-tab ${id===currentTab?'active':''}" data-tab="${id}">${label}${id==='claims' ? ` (${state.claims.filter(c=>c.status==='submitted').length})` : ''}</button>`).join('');
         el.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { currentTab=b.dataset.tab; renderTabs(); renderTab(); });
     }
 
     function renderTab() {
-        const body = overlay?.querySelector('.hji-body');
-        if (!body) return;
-        try {
-            ({dashboard:renderDashboard,customers:renderCustomers,policies:renderPolicies,payments:renderPayments,claims:renderClaims,tiers:renderTiers,settings:renderSettings}[currentTab] || renderDashboard)(body);
-        } catch (e) {
-            console.error('[HJI Manager] Tab render error:', e);
-            body.innerHTML = `<div class="hji-help"><strong>Could not render this section</strong><p>${esc(e?.message || e)}</p><p>Try another tab or close/reopen the Manager.</p></div>`;
-        }
+        const body = overlay.querySelector('.hji-body');
+        ({dashboard:renderDashboard,customers:renderCustomers,policies:renderPolicies,payments:renderPayments,claims:renderClaims,tiers:renderTiers,settings:renderSettings}[currentTab] || renderDashboard)(body);
     }
 
     function renderDashboard(body) {
@@ -627,7 +331,7 @@
         const active = statuses.filter(x=>x==='Active').length;
         const due = statuses.filter(x=>x==='Due soon').length;
         const expired = statuses.filter(x=>x==='Expired').length;
-        const pendingClaims = normalizeCollection(state.claims, 'claims').filter(c=>c?.status==='submitted').length;
+        const pendingClaims = state.claims.filter(c=>c.status==='submitted').length;
         const monthAgo = Date.now()-30*86400000;
         const revenue = state.payments.filter(p=>new Date(p.date).getTime()>=monthAgo && p.method==='cash').reduce((s,p)=>s+Number(p.amount||0),0);
         body.innerHTML = `
@@ -675,14 +379,36 @@
     }
 
     function renderPolicies(body) {
-        body.innerHTML = `<div class="hji-toolbar"><button class="hji-btn good" id="hji-add-policy">+ Add policy</button></div>
-        <div class="hji-help"><strong>Client linking</strong><p>After creating a policy, use <b>Client setup</b> to generate a code for that insured player. The same HJI Client can hold policies from different insurers.</p></div>
+        body.innerHTML = `
+        <div class="hji-toolbar"><button class="hji-btn good" id="hji-add-policy">+ Add policy</button></div>
+        <div class="hji-help">
+          <strong>Policy lifecycle</strong>
+          <p>Monthly/time-based cover stays as one policy. Use <b>Renew</b> to extend it and record the renewal payment. Single-jump policies remain active until used or cancelled.</p>
+          <p><span class="hji-active">Green = active</span> · <span class="hji-due">Amber = due soon</span> · <span class="hji-expired">Red = expired</span> · Grey = cancelled/used.</p>
+        </div>
         <div class="hji-table-wrap"><table class="hji-table"><thead><tr><th>Customer</th><th>Tier</th><th>Started</th><th>Ends / Use</th><th>Status</th><th></th></tr></thead><tbody>
-        ${state.policies.map(p=>{const c=getCustomer(p.customerId),t=getTier(p.tierId),st=policyStatus(p); return `<tr><td>${esc(c?.name||'Unknown')}</td><td>${esc(t?.name||p.tierName||'Unknown')}</td><td>${dateOnly(p.startDate)}</td><td>${p.type==='single'?(p.used?'Used':'Not used'):dateOnly(p.endDate)}</td><td class="hji-status ${st[1]}">${st[0]}</td><td><div class="hji-toolbar" style="margin:0"><button class="hji-btn" data-setup-policy="${p.id}">Client setup</button><button class="hji-btn" data-edit-policy="${p.id}">Edit</button></div></td></tr>`}).join('') || '<tr><td colspan="6">No policies yet.</td></tr>'}
+        ${state.policies.map(p=>{
+            const c=getCustomer(p.customerId),t=getTier(p.tierId),st=policyStatus(p);
+            const canRenew=(t?.type==='monthly' && p.status!=='cancelled');
+            return `<tr class="${policyRowClass(p)}">
+              <td>${esc(c?.name||'Unknown')}</td>
+              <td>${esc(t?.name||p.tierName||'Unknown')}</td>
+              <td>${dateOnly(p.startDate)}</td>
+              <td>${p.type==='single'?(p.used?'Used':'Not used'):dateOnly(p.endDate)}</td>
+              <td class="hji-status ${st[1]}">${st[0]}</td>
+              <td><div class="hji-toolbar" style="margin:0">
+                ${canRenew?`<button class="hji-btn good" data-renew-policy="${p.id}">Renew</button>`:''}
+                <button class="hji-btn" data-setup-policy="${p.id}">Client setup</button>
+                <button class="hji-btn" data-edit-policy="${p.id}">Edit</button>
+              </div></td>
+            </tr>`;
+        }).join('') || '<tr><td colspan="6">No policies yet.</td></tr>'}
         </tbody></table></div>`;
+
         body.querySelector('#hji-add-policy').onclick=()=>policyModal();
         body.querySelectorAll('[data-edit-policy]').forEach(b=>b.onclick=()=>policyModal(getPolicy(b.dataset.editPolicy)));
         body.querySelectorAll('[data-setup-policy]').forEach(b=>b.onclick=()=>setupCodeModal(getPolicy(b.dataset.setupPolicy)));
+        body.querySelectorAll('[data-renew-policy]').forEach(b=>b.onclick=()=>renewPolicyModal(getPolicy(b.dataset.renewPolicy)));
     }
 
     function policyModal(existing=null) {
@@ -790,284 +516,20 @@
         modal.addSave(()=>{const data={name:modal.el.querySelector('#tier-name').value.trim(),type:modal.el.querySelector('#tier-type').value,durationDays:Number(modal.el.querySelector('#tier-days').value||0),maxDvds:Number(modal.el.querySelector('#tier-dvds').value||0),coverage:modal.el.querySelector('#tier-cover').value.trim(),cashPrice:Number(modal.el.querySelector('#tier-cash').value||0),active:modal.el.querySelector('#tier-active').value==='1',itemName:modal.el.querySelector('#tier-item').value.trim(),itemQty:Number(modal.el.querySelector('#tier-qty').value||0)};if(!data.name)return alert('Tier name is required.');if(existing)Object.assign(existing,data);else state.tiers.push({id:uid('tier'),...data});saveAll();modal.close();renderTab();});
     }
 
-
-    function extractProfileIdentity(data) {
-        if (!data || typeof data !== 'object') return null;
-
-        const candidates = [data, data.user, data.profile, data.basic, data.player].filter(Boolean);
-        for (const obj of candidates) {
-            if (!obj || typeof obj !== 'object') continue;
-            const id = obj.player_id ?? obj.user_id ?? obj.id ?? obj.ID;
-            const name = obj.name ?? obj.username ?? obj.player_name;
-            if (id && name) return { id: String(id), name: String(name) };
-        }
-
-        for (const value of Object.values(data)) {
-            if (value && typeof value === 'object' && !Array.isArray(value)) {
-                const found = extractProfileIdentity(value);
-                if (found) return found;
-            }
-        }
-        return null;
-    }
-
-    async function detectApiAccount(apiKey) {
-        if (!apiKey) throw new Error('Save or enter an API key first.');
-
-        const attempts = [
-            `${API_BASE}/user/basic`,
-            `${API_BASE}/user/profile`,
-            'https://api.torn.com/user/?selections=basic'
-        ];
-
-        let lastError = null;
-        for (const url of attempts) {
-            try {
-                const data = await requestApi(url, apiKey);
-                if (data?.error) throw new Error(data.error.error || data.error.message || JSON.stringify(data.error));
-                const identity = extractProfileIdentity(data);
-                if (identity) return identity;
-            } catch (e) {
-                lastError = e;
-            }
-        }
-        throw lastError || new Error('Could not identify the API-key account.');
-    }
-
-    function renderProviderAccountNotice(container) {
-        const providerId = String(container.querySelector('#set-id')?.value || '').trim();
-        const providerName = String(container.querySelector('#set-name')?.value || '').trim();
-        const apiId = String(state.settings.apiAccountId || '').trim();
-        const apiName = String(state.settings.apiAccountName || '').trim();
-        const notice = container.querySelector('#set-account-notice');
-        if (!notice) return;
-
-        if (!apiId) {
-            notice.innerHTML = '<span class="hji-muted">API account has not been detected yet.</span>';
-            return;
-        }
-
-        const same = providerId && providerId === apiId;
-        if (same) {
-            notice.innerHTML = `<span class="hji-active"><b>API account:</b> ${esc(apiName)} [${esc(apiId)}] · matches the configured policy provider.</span>`;
-        } else {
-            notice.innerHTML = `
-              <div class="hji-help" style="margin:0">
-                <strong>Managing on behalf of another provider</strong>
-                <p><b>API account:</b> ${esc(apiName)} [${esc(apiId)}]</p>
-                <p><b>Policy provider:</b> ${esc(providerName || 'Not set')} ${providerId ? `[${esc(providerId)}]` : ''}</p>
-                <p>This is allowed by the Manager design, but claims/setup codes will point to the <b>Policy provider</b>, not the API account.</p>
-              </div>`;
-        }
-    }
-
     function renderSettings(body){
-        const customKeyUrl = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Happy%20Jump%20Insurance%20Manager&user=messages,newmessages,basic';
-        body.innerHTML=`
-        <div class="hji-help">
-          <strong>Settings help</strong>
-          <p><b>Provider Name / ID</b> identifies the person actually providing the insurance. These fields stay editable so you can manage policies on behalf of another Torn user.</p>
-          <details><summary>What does “Detect My Torn Account” do?</summary><p>It identifies the account that owns the stored API key and can optionally fill the Provider fields. You can edit them afterward.</p></details>
-          <details><summary>What if the API account and provider are different?</summary><p>The Manager will show a warning. Client setup codes and claim routing use the Provider fields, not the API-key owner.</p></details>
-          <details><summary>Where is the API key stored?</summary><p>Locally by this userscript on the current browser/device. Setup codes and customer-facing data never include it.</p></details>
+        body.innerHTML=`<div class="hji-form">
+          <label>Provider Torn name<input id="set-name" value="${esc(state.settings.providerName||'')}"></label>
+          <label>Provider Torn ID<input id="set-id" inputmode="numeric" value="${esc(state.settings.providerId||'')}"></label>
+          <label class="wide">Torn API key <span class="hji-muted">Used only to read the provider's own Torn mail for claim imports.</span><input id="set-key" type="password" value="${esc(state.settings.apiKey||'')}"></label>
+          <label>Due soon warning (days)<input id="set-due" inputmode="numeric" value="${esc(state.settings.dueSoonDays||3)}"></label>
+          <label>Claim scan interval hint (minutes)<input id="set-poll" inputmode="numeric" value="${esc(state.settings.claimPollMinutes||10)}"></label>
         </div>
-
-        <div class="hji-card">
-          <strong>Provider identity <span class="hji-info" title="The actual person providing the policy. Claims are routed to this Torn ID.">i</span></strong>
-          <div class="hji-form" style="margin-top:10px">
-            <label title="Editable. This is the insurer shown to the client.">Provider Torn name<input id="set-name" value="${esc(state.settings.providerName||'')}"></label>
-            <label title="Editable. Claims generated by the client are addressed to this Torn ID.">Provider Torn ID<input id="set-id" inputmode="numeric" value="${esc(state.settings.providerId||'')}"></label>
-          </div>
-          <div class="hji-toolbar" style="margin-top:10px">
-            <button class="hji-btn" id="set-detect-account">Detect My Torn Account</button>
-            <button class="hji-btn" id="set-fill-provider">Use detected account as provider</button>
-          </div>
-          <div id="set-account-notice"></div>
-        </div>
-
-        <div class="hji-card">
-          <strong>Torn API <span class="hji-info" title="Used for reading claim mail and identifying the API-key owner.">i</span></strong>
-          <p class="hji-muted">The custom key requests <b>user → messages</b>, <b>newmessages</b>, and <b>basic</b>. Basic is used only for the account-detection button.</p>
-          <div class="hji-form">
-            <label class="wide">Stored API key
-              <div style="display:flex;gap:7px">
-                <input id="set-key" type="password" autocomplete="off" value="${esc(state.settings.apiKey||'')}" placeholder="Paste your HJI custom API key">
-                <button type="button" class="hji-btn" id="set-toggle-key">Show</button>
-              </div>
-            </label>
-          </div>
-          <div class="hji-toolbar" style="margin-top:10px">
-            <button class="hji-btn good" id="set-keydocs">Generate HJI custom key</button>
-            <button class="hji-btn" id="set-copy-keyurl">Copy key-builder link</button>
-            <button class="hji-btn" id="set-test-key">Test key</button>
-          </div>
-          <div class="hji-help">
-            <strong>API-key disclosure</strong>
-            <p>The key is sent only to Torn's official API when this Manager checks messages or detects the API-key account. It is not sent to another HJI user, included in setup codes, or included in exported backups.</p>
-          </div>
-        </div>
-
-        <div class="hji-card">
-          <strong>Manager options <span class="hji-info" title="These values affect reminders and the suggested scan cadence only.">i</span></strong>
-          <div class="hji-form" style="margin-top:10px">
-            <label title="Policies ending within this many days show as Due soon.">Due soon warning (days)<input id="set-due" inputmode="numeric" value="${esc(state.settings.dueSoonDays||3)}"></label>
-            <label title="A reminder value only; the Manager does not silently scan Torn in the background.">Claim scan interval hint (minutes)<input id="set-poll" inputmode="numeric" value="${esc(state.settings.claimPollMinutes||10)}"></label>
-          </div>
-        </div>
-
-        <div class="hji-toolbar">
-          <button class="hji-btn good" id="set-save">Save settings</button>
-          <button class="hji-btn" id="set-export">Export backup</button>
-          <button class="hji-btn" id="set-import">Import backup</button>
-        </div>`;
-
-        const keyInput = body.querySelector('#set-key');
-        const providerNameInput = body.querySelector('#set-name');
-        const providerIdInput = body.querySelector('#set-id');
-
-        renderProviderAccountNotice(body);
-
-        providerNameInput.addEventListener('input',()=>renderProviderAccountNotice(body));
-        providerIdInput.addEventListener('input',()=>renderProviderAccountNotice(body));
-
-        body.querySelector('#set-toggle-key').onclick=()=>{
-            const showing = keyInput.type === 'text';
-            keyInput.type = showing ? 'password' : 'text';
-            body.querySelector('#set-toggle-key').textContent = showing ? 'Show' : 'Hide';
-        };
-
-        body.querySelector('#set-save').onclick=()=>{
-            Object.assign(state.settings,{
-                providerName:providerNameInput.value.trim(),
-                providerId:providerIdInput.value.trim(),
-                apiKey:keyInput.value.trim(),
-                dueSoonDays:Number(body.querySelector('#set-due').value||3),
-                claimPollMinutes:Number(body.querySelector('#set-poll').value||10)
-            });
-            saveAll();
-            renderProviderAccountNotice(body);
-            alert('Settings saved locally.');
-        };
-
-        body.querySelector('#set-detect-account').onclick=async()=>{
-            const key = keyInput.value.trim();
-            if (!key) return alert('Enter the API key first.');
-
-            const btn = body.querySelector('#set-detect-account');
-            btn.disabled = true;
-            btn.textContent = 'Detecting…';
-
-            try {
-                const identity = await detectApiAccount(key);
-                state.settings.apiAccountId = identity.id;
-                state.settings.apiAccountName = identity.name;
-
-                // Save the key too, because the user has explicitly used it here.
-                state.settings.apiKey = key;
-
-                // Convenient first-time behaviour: only auto-fill empty provider fields.
-                if (!providerIdInput.value.trim()) providerIdInput.value = identity.id;
-                if (!providerNameInput.value.trim()) providerNameInput.value = identity.name;
-
-                state.settings.providerId = providerIdInput.value.trim();
-                state.settings.providerName = providerNameInput.value.trim();
-
-                saveAll();
-                renderProviderAccountNotice(body);
-                alert(`Detected API account: ${identity.name} [${identity.id}]`);
-            } catch(e) {
-                alert(`Could not detect the API-key account.\n\n${e.message}`);
-            } finally {
-                btn.disabled = false;
-                btn.textContent = 'Detect My Torn Account';
-            }
-        };
-
-        body.querySelector('#set-fill-provider').onclick=()=>{
-            if (!state.settings.apiAccountId) return alert('Detect the API-key account first.');
-            providerIdInput.value = state.settings.apiAccountId;
-            providerNameInput.value = state.settings.apiAccountName || '';
-            state.settings.providerId = providerIdInput.value.trim();
-            state.settings.providerName = providerNameInput.value.trim();
-            saveAll();
-            renderProviderAccountNotice(body);
-        };
-
-        body.querySelector('#set-keydocs').onclick=()=>{
-            const a=document.createElement('a');
-            a.href=customKeyUrl;
-            a.target='_blank';
-            a.rel='noopener noreferrer';
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-        };
-
-        body.querySelector('#set-copy-keyurl').onclick=async()=>{
-            await copyText(customKeyUrl);
-            alert('Custom-key builder link copied.');
-        };
-
-        body.querySelector('#set-test-key').onclick=async()=>{
-            const key = keyInput.value.trim();
-            if (!key) return alert('Paste your HJI custom API key first.');
-            const btn = body.querySelector('#set-test-key');
-            btn.disabled = true;
-            btn.textContent = 'Testing…';
-            try {
-                let data;
-                try { data = await requestApi(`${API_BASE}/user/newmessages?limit=1`, key); }
-                catch { data = await requestApi(`${API_BASE}/user/messages?limit=1`, key); }
-                if (data?.error) throw new Error(data.error.error || data.error.message || JSON.stringify(data.error));
-                alert('The API key worked for the HJI message check.');
-            } catch(e) {
-                alert(`API key test failed.\n\n${e.message}\n\nUse the HJI custom-key button and allow messages/newmessages/basic.`);
-            } finally {
-                btn.disabled = false;
-                btn.textContent = 'Test key';
-            }
-        };
-
-        body.querySelector('#set-export').onclick=()=>{
-            const safeState=JSON.parse(JSON.stringify(state));
-            if(safeState.settings)safeState.settings.apiKey='';
-            const blob=new Blob([JSON.stringify({version:VERSION,exportedAt:nowISO(),state:safeState},null,2)],{type:'application/json'});
-            const a=document.createElement('a');
-            a.href=URL.createObjectURL(blob);
-            a.download=`torn-hji-backup-${new Date().toISOString().slice(0,10)}.json`;
-            a.click();
-            setTimeout(()=>URL.revokeObjectURL(a.href),1000);
-        };
-
-        body.querySelector('#set-import').onclick=()=>{
-            const inp=document.createElement('input');
-            inp.type='file';
-            inp.accept='.json,application/json';
-            inp.onchange=()=>{
-                const f=inp.files[0];
-                if(!f)return;
-                const r=new FileReader();
-                r.onload=()=>{
-                    try{
-                        const obj=JSON.parse(r.result);
-                        if(!obj.state)throw new Error('Missing state');
-                        if(!confirm('Replace current local HJI manager data with this backup?'))return;
-                        const existingKey=state.settings?.apiKey||'';
-                        state=obj.state;
-                        state.settings=normalizeSettings(state.settings||{});
-                        if(!state.settings.apiKey)state.settings.apiKey=existingKey;
-                        saveAll();
-                        renderTabs();
-                        renderTab();
-                        alert('Backup imported.');
-                    }catch(e){
-                        alert('Import failed: '+e.message);
-                    }
-                };
-                r.readAsText(f);
-            };
-            inp.click();
-        };
+        <div class="hji-toolbar" style="margin-top:12px"><button class="hji-btn good" id="set-save">Save settings</button><button class="hji-btn" id="set-keydocs">Open Torn custom key builder</button><button class="hji-btn" id="set-export">Export backup</button><button class="hji-btn" id="set-import">Import backup</button></div>
+        <p class="hji-muted">The manager's database is stored locally in the script/browser. Export backups regularly. API keys are never placed in claim messages.</p>`;
+        body.querySelector('#set-save').onclick=()=>{Object.assign(state.settings,{providerName:body.querySelector('#set-name').value.trim(),providerId:body.querySelector('#set-id').value.trim(),apiKey:body.querySelector('#set-key').value.trim(),dueSoonDays:Number(body.querySelector('#set-due').value||3),claimPollMinutes:Number(body.querySelector('#set-poll').value||10)});saveAll();alert('Saved.');};
+        body.querySelector('#set-keydocs').onclick=()=>window.open('https://www.torn.com/preferences.php#tab=api?step=addNewKey&user=messages&title=Happy%20Jump%20Insurance%20Manager','_blank');
+        body.querySelector('#set-export').onclick=()=>{const blob=new Blob([JSON.stringify({version:VERSION,exportedAt:nowISO(),state},null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`torn-hji-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);};
+        body.querySelector('#set-import').onclick=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.json,application/json';inp.onchange=()=>{const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{const obj=JSON.parse(r.result);if(!obj.state)throw new Error('Missing state');if(!confirm('Replace current local HJI manager data with this backup?'))return;state=obj.state;saveAll();renderTabs();renderTab();alert('Backup imported.');}catch(e){alert('Import failed: '+e.message)}};r.readAsText(f)};inp.click();};
     }
 
     function createModal(title){
@@ -1161,35 +623,10 @@
     function addLauncher(){
         injectStyles();
         if(document.getElementById('hji-launcher'))return;
-        const b=document.createElement('button');
-        b.id='hji-launcher';
-        b.textContent='🛡 HJI Manager';
-        document.body.appendChild(b);
-        makeDraggable(b, b, 'launcherPos', ()=>openApp());
-        b.title='Tap to open. Drag to move.';
+        const b=document.createElement('button');b.id='hji-launcher';b.textContent='🛡 HJI Manager';b.onclick=()=>openApp();document.body.appendChild(b);
     }
 
-    function boot(){
-        if (!document.body) return;
-        addLauncher();
-    }
-
-    function startObserver(){
-        const target = document.documentElement || document.body;
-        if (!target || typeof target.nodeType !== 'number') {
-            setTimeout(startObserver, 250);
-            return;
-        }
-        const observer = new MutationObserver(()=>{
-            if(document.body && !document.getElementById('hji-launcher') && !overlay) addLauncher();
-        });
-        observer.observe(target,{childList:true,subtree:true});
-    }
-
-    if(document.readyState==='loading') {
-        document.addEventListener('DOMContentLoaded',()=>{ boot(); startObserver(); },{once:true});
-    } else {
-        boot();
-        startObserver();
-    }
+    function boot(){ addLauncher(); }
+    if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
+    new MutationObserver(()=>{if(document.body&&!document.getElementById('hji-launcher')&&!overlay)addLauncher();}).observe(document.documentElement,{childList:true,subtree:true});
 })();
