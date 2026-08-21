@@ -9,8 +9,8 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @run-at       document-idle
-// @downloadURL  https://raw.githubusercontent.com/DooBiiE/Torn-Happy-Jump-Insurance/main/torn-hji-client.user.js
-// @updateURL    https://raw.githubusercontent.com/DooBiiE/Torn-Happy-Jump-Insurance/main/torn-hji-client.user.js
+// @downloadURL  https://raw.githubusercontent.com/YOUR_GITHUB/YOUR_REPO/main/torn-hji-client.user.js
+// @updateURL    https://raw.githubusercontent.com/YOUR_GITHUB/YOUR_REPO/main/torn-hji-client.user.js
 // ==/UserScript==
 
 (() => {
