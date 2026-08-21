@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Client
 // @namespace    torn-hji
-// @version      0.3.0
+// @version      0.3.1
 // @description  Insured-user client for importing Happy Jump policies and preparing structured Torn Mail claims.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -16,7 +16,7 @@
 (() => {
     'use strict';
 
-    const VERSION=(typeof GM_info!=='undefined'&&GM_info?.script?.version)||'0.3.0';
+    const VERSION = '0.3.1';
     const PREFIX='torn_hji_client_v2_';
     const LEGACY_PREFIX='torn_hji_client_v1_';
     const CLAIM_PREFIX='[HJI CLAIM]';
@@ -50,43 +50,128 @@
         return pos;
     }
 
-    function makeDraggable(el,handle,storageKey,clickHandler=null){
-        const saved=loadPosition(storageKey);
-        if(saved){
-            el.style.left=`${Math.max(0,Math.min(saved.left,window.innerWidth-40))}px`;
-            el.style.top=`${Math.max(0,Math.min(saved.top,window.innerHeight-40))}px`;
-            el.style.right='auto';el.style.bottom='auto';
+    function makeDraggable(el, handle, storageKey, clickHandler = null) {
+        const saved = loadPosition(storageKey);
+        if (saved) {
+            el.style.left = `${Math.max(0, Math.min(saved.left, window.innerWidth - 45))}px`;
+            el.style.top = `${Math.max(0, Math.min(saved.top, window.innerHeight - 45))}px`;
+            el.style.right = 'auto';
+            el.style.bottom = 'auto';
+            el.style.transform = 'none';
         }
-        let dragging=false,moved=false,startX=0,startY=0,startLeft=0,startTop=0;
-        handle.style.touchAction='none';
-        handle.addEventListener('pointerdown',e=>{
-            if(e.button!==undefined&&e.button!==0)return;
-            if(e.target.closest('button,input,select,textarea,a'))return;
-            dragging=true;moved=false;
-            const r=el.getBoundingClientRect();
-            startX=e.clientX;startY=e.clientY;startLeft=r.left;startTop=r.top;
-            try{handle.setPointerCapture(e.pointerId)}catch{}
-        });
-        handle.addEventListener('pointermove',e=>{
-            if(!dragging)return;
-            const dx=e.clientX-startX,dy=e.clientY-startY;
-            if(Math.abs(dx)+Math.abs(dy)>5)moved=true;
-            const maxLeft=Math.max(0,window.innerWidth-Math.min(el.offsetWidth,60));
-            const maxTop=Math.max(0,window.innerHeight-Math.min(el.offsetHeight,40));
-            el.style.left=`${Math.max(0,Math.min(startLeft+dx,maxLeft))}px`;
-            el.style.top=`${Math.max(0,Math.min(startTop+dy,maxTop))}px`;
-            el.style.right='auto';el.style.bottom='auto';
-        });
-        const end=e=>{
-            if(!dragging)return;
-            dragging=false;
-            try{handle.releasePointerCapture(e.pointerId)}catch{}
-            const r=el.getBoundingClientRect();
-            storage.set(storageKey,{left:Math.round(r.left),top:Math.round(r.top)});
-            if(!moved&&clickHandler)clickHandler();
+
+        let dragging = false, moved = false;
+        let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+
+        const point = e => {
+            const t = e.touches?.[0] || e.changedTouches?.[0] || e;
+            return { x: t.clientX, y: t.clientY };
         };
-        handle.addEventListener('pointerup',end);
-        handle.addEventListener('pointercancel',end);
+
+        const begin = e => {
+            // Header buttons should still work; the launcher itself is intentionally draggable.
+            if (handle !== el && e.target.closest?.('button,input,select,textarea,a')) return;
+            if (e.type === 'mousedown' && e.button !== 0) return;
+
+            const p = point(e);
+            const r = el.getBoundingClientRect();
+            dragging = true;
+            moved = false;
+            startX = p.x;
+            startY = p.y;
+            startLeft = r.left;
+            startTop = r.top;
+
+            // Remove centering transform before applying absolute drag coordinates.
+            el.style.left = `${r.left}px`;
+            el.style.top = `${r.top}px`;
+            el.style.right = 'auto';
+            el.style.bottom = 'auto';
+            el.style.transform = 'none';
+
+            if (e.cancelable) e.preventDefault();
+        };
+
+        const move = e => {
+            if (!dragging) return;
+            const p = point(e);
+            const dx = p.x - startX;
+            const dy = p.y - startY;
+            if (Math.abs(dx) + Math.abs(dy) > 6) moved = true;
+
+            const visibleW = Math.min(el.offsetWidth || 60, 60);
+            const visibleH = Math.min(el.offsetHeight || 40, 40);
+            const left = Math.max(0, Math.min(startLeft + dx, window.innerWidth - visibleW));
+            const top = Math.max(0, Math.min(startTop + dy, window.innerHeight - visibleH));
+            el.style.left = `${left}px`;
+            el.style.top = `${top}px`;
+
+            if (e.cancelable) e.preventDefault();
+        };
+
+        const finish = e => {
+            if (!dragging) return;
+            dragging = false;
+            const r = el.getBoundingClientRect();
+            storage.set(storageKey, { left: Math.round(r.left), top: Math.round(r.top) });
+            if (!moved && clickHandler) clickHandler();
+            if (e?.cancelable && moved) e.preventDefault();
+        };
+
+        handle.style.touchAction = 'none';
+        handle.addEventListener('mousedown', begin);
+        window.addEventListener('mousemove', move, { passive: false });
+        window.addEventListener('mouseup', finish);
+        handle.addEventListener('touchstart', begin, { passive: false });
+        window.addEventListener('touchmove', move, { passive: false });
+        window.addEventListener('touchend', finish, { passive: false });
+        window.addEventListener('touchcancel', finish, { passive: false });
+    }
+
+    function makeResizable(el, grip, storageKey) {
+        const saved = storage.get(storageKey, null);
+        if (saved?.width && saved?.height) {
+            el.style.width = `${Math.min(saved.width, window.innerWidth * 0.97)}px`;
+            el.style.height = `${Math.min(saved.height, window.innerHeight * 0.92)}px`;
+        }
+
+        let resizing = false, startX = 0, startY = 0, startW = 0, startH = 0;
+        const point = e => {
+            const t = e.touches?.[0] || e.changedTouches?.[0] || e;
+            return { x: t.clientX, y: t.clientY };
+        };
+        const begin = e => {
+            const p = point(e);
+            const r = el.getBoundingClientRect();
+            resizing = true;
+            startX = p.x; startY = p.y; startW = r.width; startH = r.height;
+            if (e.cancelable) e.preventDefault();
+            e.stopPropagation?.();
+        };
+        const move = e => {
+            if (!resizing) return;
+            const p = point(e);
+            const minW = 300, minH = 300;
+            const maxW = Math.max(minW, window.innerWidth * 0.97);
+            const maxH = Math.max(minH, window.innerHeight * 0.92);
+            el.style.width = `${Math.max(minW, Math.min(startW + p.x - startX, maxW))}px`;
+            el.style.height = `${Math.max(minH, Math.min(startH + p.y - startY, maxH))}px`;
+            if (e.cancelable) e.preventDefault();
+        };
+        const finish = () => {
+            if (!resizing) return;
+            resizing = false;
+            const r = el.getBoundingClientRect();
+            storage.set(storageKey, { width: Math.round(r.width), height: Math.round(r.height) });
+        };
+
+        grip.addEventListener('mousedown', begin);
+        window.addEventListener('mousemove', move, { passive: false });
+        window.addEventListener('mouseup', finish);
+        grip.addEventListener('touchstart', begin, { passive: false });
+        window.addEventListener('touchmove', move, { passive: false });
+        window.addEventListener('touchend', finish);
+        window.addEventListener('touchcancel', finish);
     }
 
     let state=storage.get('state',null);
@@ -133,7 +218,8 @@
         .hc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.hc-field{background:#171a1f;padding:9px;border-radius:6px}.hc-field small{display:block;color:#999;margin-bottom:3px}
         .hc-btn{background:#3a414b;color:#fff;border:1px solid #59616d;border-radius:6px;padding:9px 11px;cursor:pointer}.hc-btn.good{background:#315d3e}.hc-btn.danger{background:#653535}.hc-close,.hc-size{background:#3b414b;color:#fff;border:0;border-radius:6px;padding:7px 10px;cursor:pointer}
         .hc-form{display:grid;grid-template-columns:1fr 1fr;gap:9px}.hc-form label{display:flex;flex-direction:column;gap:5px}.hc-form .wide{grid-column:1/-1}.hc-form input,.hc-form select,.hc-form textarea{box-sizing:border-box;width:100%;background:#111419;color:#fff;border:1px solid #555;border-radius:6px;padding:9px}.hc-form textarea{min-height:90px}
-        .hc-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.hc-muted{font-size:12px;color:#aaa}.hc-policy{border-left:4px solid #59616d}.hc-help{background:#1b2229;border:1px solid #405165;border-radius:8px;padding:10px;margin-bottom:10px}.hc-help p{margin:5px 0}.hc-help details{margin-top:6px}.hc-help summary{cursor:pointer;font-weight:700}
+        .hc-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.hc-muted{font-size:12px;color:#aaa}.hc-policy{border-left:4px solid #59616d}.hc-resize-grip{position:absolute;right:0;bottom:0;width:28px;height:28px;z-index:20;cursor:nwse-resize;touch-action:none}.hc-resize-grip:after{content:'↘';position:absolute;right:5px;bottom:3px;color:#aaa;font-size:17px;}
+        .hc-help{background:#1b2229;border:1px solid #405165;border-radius:8px;padding:10px;margin-bottom:10px}.hc-help p{margin:5px 0}.hc-help details{margin-top:6px}.hc-help summary{cursor:pointer;font-weight:700}
         @media(max-width:600px){#hji-client-launch{left:9px;bottom:10px;padding:9px 12px}#hji-client-app{width:90vw;height:72vh;max-height:82vh;resize:both}#hji-client-app.hc-compact{width:84vw;height:60vh}.hc-grid,.hc-form{grid-template-columns:1fr}.hc-form .wide{grid-column:auto}.hc-head h2{font-size:15px}}
         `;document.head.appendChild(s);
     }
@@ -158,12 +244,14 @@
                   ${state.claims.length?state.claims.slice().reverse().map(c=>`<div class="hc-field" style="margin-bottom:6px"><strong>${esc(c.reference)}</strong><br><small>${esc(new Date(c.createdAt).toLocaleString('en-GB'))} · ${esc(c.providerName||'')}</small>${esc(c.summary||'')}</div>`).join(''):'<div class="hc-muted">No claims prepared yet.</div>'}
                 </div>
               </div>
+              <div class="hc-resize-grip" title="Drag to resize"></div>
             </div>`;
             document.body.appendChild(overlay);
             const app=overlay.querySelector('#hji-client-app');
             overlay.querySelector('.hc-close').onclick=()=>{overlay.remove();overlay=null};
             overlay.querySelector('.hc-size').onclick=()=>app.classList.toggle('hc-compact');
             makeDraggable(app,overlay.querySelector('.hc-head'),'windowPos');
+            makeResizable(app,overlay.querySelector('.hc-resize-grip'),'windowSize');
             overlay.querySelector('#hc-settings').onclick=settingsModal;
             overlay.querySelector('#hc-import').onclick=importModal;
             overlay.querySelector('#hc-claim').onclick=claimModal;

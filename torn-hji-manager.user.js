@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.3.0
+// @version      0.3.1
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '0.3.0';
+    const VERSION = '0.3.1';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const API_BASE = 'https://api.torn.com/v2';
@@ -86,53 +86,125 @@
     function makeDraggable(el, handle, storageKey, clickHandler = null) {
         const saved = loadPosition(storageKey);
         if (saved) {
-            el.style.left = `${Math.max(0, Math.min(saved.left, window.innerWidth - 40))}px`;
-            el.style.top = `${Math.max(0, Math.min(saved.top, window.innerHeight - 40))}px`;
+            el.style.left = `${Math.max(0, Math.min(saved.left, window.innerWidth - 45))}px`;
+            el.style.top = `${Math.max(0, Math.min(saved.top, window.innerHeight - 45))}px`;
             el.style.right = 'auto';
             el.style.bottom = 'auto';
+            el.style.transform = 'none';
         }
 
-        let dragging = false;
-        let moved = false;
+        let dragging = false, moved = false;
         let startX = 0, startY = 0, startLeft = 0, startTop = 0;
 
-        handle.style.touchAction = 'none';
-        handle.addEventListener('pointerdown', e => {
-            if (e.button !== undefined && e.button !== 0) return;
-            if (e.target.closest('button,input,select,textarea,a')) return;
+        const point = e => {
+            const t = e.touches?.[0] || e.changedTouches?.[0] || e;
+            return { x: t.clientX, y: t.clientY };
+        };
+
+        const begin = e => {
+            // Header buttons should still work; the launcher itself is intentionally draggable.
+            if (handle !== el && e.target.closest?.('button,input,select,textarea,a')) return;
+            if (e.type === 'mousedown' && e.button !== 0) return;
+
+            const p = point(e);
+            const r = el.getBoundingClientRect();
             dragging = true;
             moved = false;
-            const r = el.getBoundingClientRect();
-            startX = e.clientX;
-            startY = e.clientY;
+            startX = p.x;
+            startY = p.y;
             startLeft = r.left;
             startTop = r.top;
-            try { handle.setPointerCapture(e.pointerId); } catch {}
-        });
 
-        handle.addEventListener('pointermove', e => {
-            if (!dragging) return;
-            const dx = e.clientX - startX;
-            const dy = e.clientY - startY;
-            if (Math.abs(dx) + Math.abs(dy) > 5) moved = true;
-            const maxLeft = Math.max(0, window.innerWidth - Math.min(el.offsetWidth, 60));
-            const maxTop = Math.max(0, window.innerHeight - Math.min(el.offsetHeight, 40));
-            el.style.left = `${Math.max(0, Math.min(startLeft + dx, maxLeft))}px`;
-            el.style.top = `${Math.max(0, Math.min(startTop + dy, maxTop))}px`;
+            // Remove centering transform before applying absolute drag coordinates.
+            el.style.left = `${r.left}px`;
+            el.style.top = `${r.top}px`;
             el.style.right = 'auto';
             el.style.bottom = 'auto';
-        });
+            el.style.transform = 'none';
 
-        const end = e => {
+            if (e.cancelable) e.preventDefault();
+        };
+
+        const move = e => {
+            if (!dragging) return;
+            const p = point(e);
+            const dx = p.x - startX;
+            const dy = p.y - startY;
+            if (Math.abs(dx) + Math.abs(dy) > 6) moved = true;
+
+            const visibleW = Math.min(el.offsetWidth || 60, 60);
+            const visibleH = Math.min(el.offsetHeight || 40, 40);
+            const left = Math.max(0, Math.min(startLeft + dx, window.innerWidth - visibleW));
+            const top = Math.max(0, Math.min(startTop + dy, window.innerHeight - visibleH));
+            el.style.left = `${left}px`;
+            el.style.top = `${top}px`;
+
+            if (e.cancelable) e.preventDefault();
+        };
+
+        const finish = e => {
             if (!dragging) return;
             dragging = false;
-            try { handle.releasePointerCapture(e.pointerId); } catch {}
             const r = el.getBoundingClientRect();
-            storage.set(storageKey, {left: Math.round(r.left), top: Math.round(r.top)});
+            storage.set(storageKey, { left: Math.round(r.left), top: Math.round(r.top) });
             if (!moved && clickHandler) clickHandler();
+            if (e?.cancelable && moved) e.preventDefault();
         };
-        handle.addEventListener('pointerup', end);
-        handle.addEventListener('pointercancel', end);
+
+        handle.style.touchAction = 'none';
+        handle.addEventListener('mousedown', begin);
+        window.addEventListener('mousemove', move, { passive: false });
+        window.addEventListener('mouseup', finish);
+        handle.addEventListener('touchstart', begin, { passive: false });
+        window.addEventListener('touchmove', move, { passive: false });
+        window.addEventListener('touchend', finish, { passive: false });
+        window.addEventListener('touchcancel', finish, { passive: false });
+    }
+
+    function makeResizable(el, grip, storageKey) {
+        const saved = storage.get(storageKey, null);
+        if (saved?.width && saved?.height) {
+            el.style.width = `${Math.min(saved.width, window.innerWidth * 0.97)}px`;
+            el.style.height = `${Math.min(saved.height, window.innerHeight * 0.92)}px`;
+        }
+
+        let resizing = false, startX = 0, startY = 0, startW = 0, startH = 0;
+        const point = e => {
+            const t = e.touches?.[0] || e.changedTouches?.[0] || e;
+            return { x: t.clientX, y: t.clientY };
+        };
+        const begin = e => {
+            const p = point(e);
+            const r = el.getBoundingClientRect();
+            resizing = true;
+            startX = p.x; startY = p.y; startW = r.width; startH = r.height;
+            if (e.cancelable) e.preventDefault();
+            e.stopPropagation?.();
+        };
+        const move = e => {
+            if (!resizing) return;
+            const p = point(e);
+            const minW = 300, minH = 300;
+            const maxW = Math.max(minW, window.innerWidth * 0.97);
+            const maxH = Math.max(minH, window.innerHeight * 0.92);
+            el.style.width = `${Math.max(minW, Math.min(startW + p.x - startX, maxW))}px`;
+            el.style.height = `${Math.max(minH, Math.min(startH + p.y - startY, maxH))}px`;
+            if (e.cancelable) e.preventDefault();
+        };
+        const finish = () => {
+            if (!resizing) return;
+            resizing = false;
+            const r = el.getBoundingClientRect();
+            storage.set(storageKey, { width: Math.round(r.width), height: Math.round(r.height) });
+        };
+
+        grip.addEventListener('mousedown', begin);
+        window.addEventListener('mousemove', move, { passive: false });
+        window.addEventListener('mouseup', finish);
+        grip.addEventListener('touchstart', begin, { passive: false });
+        window.addEventListener('touchmove', move, { passive: false });
+        window.addEventListener('touchend', finish);
+        window.addEventListener('touchcancel', finish);
     }
 
     function buildSetupCode(policy) {
@@ -300,6 +372,7 @@
         .hji-modal-bg{position:absolute;inset:0;background:#000b;display:flex;align-items:center;justify-content:center;padding:12px;z-index:5}.hji-modal{width:min(620px,94%);max-height:88%;overflow:auto;background:#22262c;border:1px solid #666;border-radius:8px;padding:14px}
         .hji-modal h3{margin-top:0;color:#fff}.hji-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}.hji-muted{color:#aaa;font-size:12px}.hji-pill{display:inline-block;padding:3px 7px;border-radius:999px;background:#343a42}
         .hji-help{background:#1b2229;border:1px solid #405165;border-radius:8px;padding:10px;margin:8px 0 12px}.hji-help strong{color:#fff}.hji-help p{margin:5px 0}.hji-help details{margin-top:6px}.hji-help summary{cursor:pointer;font-weight:700;color:#dfe8f2}
+        .hji-resize-grip{position:absolute;right:0;bottom:0;width:28px;height:28px;z-index:20;cursor:nwse-resize;touch-action:none}.hji-resize-grip:after{content:'↘';position:absolute;right:5px;bottom:3px;color:#aaa;font-size:17px;}
         .hji-info{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;background:#48515c;color:#fff;font-size:11px;font-weight:bold;cursor:help;margin-left:4px}
         @media(max-width:700px){
           #hji-launcher{left:9px;bottom:10px;padding:9px 12px}
@@ -342,13 +415,14 @@
                 <div><h2>🛡️ Happy Jump Insurance Manager</h2><div class="hji-muted">v${esc(VERSION)} · drag this header · resize from the lower-right corner</div></div>
                 <div class="hji-head-actions"><button class="hji-size" title="Toggle a smaller window">Size</button><button class="hji-close">Close</button></div>
               </div>
-              <div class="hji-tabs"></div><div class="hji-body"></div>
+              <div class="hji-tabs"></div><div class="hji-body"></div><div class="hji-resize-grip" title="Drag to resize"></div>
             </div>`;
             document.body.appendChild(overlay);
             const app = overlay.querySelector('#hji-app');
             overlay.querySelector('.hji-close').onclick = () => { overlay.remove(); overlay=null; };
             overlay.querySelector('.hji-size').onclick = () => app.classList.toggle('hji-compact');
             makeDraggable(app, overlay.querySelector('.hji-head'), 'windowPos');
+            makeResizable(app, overlay.querySelector('.hji-resize-grip'), 'windowSize');
             renderTabs();
             renderTab();
         } catch (e) {
