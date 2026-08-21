@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.3.2
+// @version      0.3.3
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.3.2';
+    const VERSION = '0.3.3';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const API_BASE = 'https://api.torn.com/v2';
@@ -412,7 +412,9 @@
             apiKey: '',
             dueSoonDays: 3,
             claimPollMinutes: 10,
-            lastMailScan: null
+            lastMailScan: null,
+            apiAccountId: '',
+            apiAccountName: ''
         };
         const decoded = decodeStoredValue(value, {});
         return decoded && typeof decoded === 'object' && !Array.isArray(decoded)
@@ -788,28 +790,104 @@
         modal.addSave(()=>{const data={name:modal.el.querySelector('#tier-name').value.trim(),type:modal.el.querySelector('#tier-type').value,durationDays:Number(modal.el.querySelector('#tier-days').value||0),maxDvds:Number(modal.el.querySelector('#tier-dvds').value||0),coverage:modal.el.querySelector('#tier-cover').value.trim(),cashPrice:Number(modal.el.querySelector('#tier-cash').value||0),active:modal.el.querySelector('#tier-active').value==='1',itemName:modal.el.querySelector('#tier-item').value.trim(),itemQty:Number(modal.el.querySelector('#tier-qty').value||0)};if(!data.name)return alert('Tier name is required.');if(existing)Object.assign(existing,data);else state.tiers.push({id:uid('tier'),...data});saveAll();modal.close();renderTab();});
     }
 
+
+    function extractProfileIdentity(data) {
+        if (!data || typeof data !== 'object') return null;
+
+        const candidates = [data, data.user, data.profile, data.basic, data.player].filter(Boolean);
+        for (const obj of candidates) {
+            if (!obj || typeof obj !== 'object') continue;
+            const id = obj.player_id ?? obj.user_id ?? obj.id ?? obj.ID;
+            const name = obj.name ?? obj.username ?? obj.player_name;
+            if (id && name) return { id: String(id), name: String(name) };
+        }
+
+        for (const value of Object.values(data)) {
+            if (value && typeof value === 'object' && !Array.isArray(value)) {
+                const found = extractProfileIdentity(value);
+                if (found) return found;
+            }
+        }
+        return null;
+    }
+
+    async function detectApiAccount(apiKey) {
+        if (!apiKey) throw new Error('Save or enter an API key first.');
+
+        const attempts = [
+            `${API_BASE}/user/basic`,
+            `${API_BASE}/user/profile`,
+            'https://api.torn.com/user/?selections=basic'
+        ];
+
+        let lastError = null;
+        for (const url of attempts) {
+            try {
+                const data = await requestApi(url, apiKey);
+                if (data?.error) throw new Error(data.error.error || data.error.message || JSON.stringify(data.error));
+                const identity = extractProfileIdentity(data);
+                if (identity) return identity;
+            } catch (e) {
+                lastError = e;
+            }
+        }
+        throw lastError || new Error('Could not identify the API-key account.');
+    }
+
+    function renderProviderAccountNotice(container) {
+        const providerId = String(container.querySelector('#set-id')?.value || '').trim();
+        const providerName = String(container.querySelector('#set-name')?.value || '').trim();
+        const apiId = String(state.settings.apiAccountId || '').trim();
+        const apiName = String(state.settings.apiAccountName || '').trim();
+        const notice = container.querySelector('#set-account-notice');
+        if (!notice) return;
+
+        if (!apiId) {
+            notice.innerHTML = '<span class="hji-muted">API account has not been detected yet.</span>';
+            return;
+        }
+
+        const same = providerId && providerId === apiId;
+        if (same) {
+            notice.innerHTML = `<span class="hji-active"><b>API account:</b> ${esc(apiName)} [${esc(apiId)}] · matches the configured policy provider.</span>`;
+        } else {
+            notice.innerHTML = `
+              <div class="hji-help" style="margin:0">
+                <strong>Managing on behalf of another provider</strong>
+                <p><b>API account:</b> ${esc(apiName)} [${esc(apiId)}]</p>
+                <p><b>Policy provider:</b> ${esc(providerName || 'Not set')} ${providerId ? `[${esc(providerId)}]` : ''}</p>
+                <p>This is allowed by the Manager design, but claims/setup codes will point to the <b>Policy provider</b>, not the API account.</p>
+              </div>`;
+        }
+    }
+
     function renderSettings(body){
-        const customKeyUrl = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Happy%20Jump%20Insurance%20Manager&user=messages,newmessages';
+        const customKeyUrl = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Happy%20Jump%20Insurance%20Manager&user=messages,newmessages,basic';
         body.innerHTML=`
         <div class="hji-help">
           <strong>Settings help</strong>
-          <p>This page identifies you as the insurer and stores the Torn API key used for claim-mail scanning.</p>
-          <details><summary>Why does the Manager need an API key?</summary><p>The provider script reads your Torn Mail through Torn's official API so it can recognise HJI claim messages. It does not need your password and it does not send mail through the API.</p></details>
-          <details><summary>Where is the API key stored?</summary><p>It is stored locally by this userscript on the current browser/device. Client setup codes never include it, and HJI backup exports deliberately leave it blank.</p></details>
-          <details><summary>What does “Client setup” do?</summary><p>It creates a portable code containing the insurer, insured Torn ID and policy snapshot. The insured player imports that code in their HJI Client.</p></details>
+          <p><b>Provider Name / ID</b> identifies the person actually providing the insurance. These fields stay editable so you can manage policies on behalf of another Torn user.</p>
+          <details><summary>What does “Detect My Torn Account” do?</summary><p>It identifies the account that owns the stored API key and can optionally fill the Provider fields. You can edit them afterward.</p></details>
+          <details><summary>What if the API account and provider are different?</summary><p>The Manager will show a warning. Client setup codes and claim routing use the Provider fields, not the API-key owner.</p></details>
+          <details><summary>Where is the API key stored?</summary><p>Locally by this userscript on the current browser/device. Setup codes and customer-facing data never include it.</p></details>
         </div>
 
         <div class="hji-card">
-          <strong>Provider identity <span class="hji-info" title="These details are put into client setup codes so claims know which insurer to contact.">i</span></strong>
+          <strong>Provider identity <span class="hji-info" title="The actual person providing the policy. Claims are routed to this Torn ID.">i</span></strong>
           <div class="hji-form" style="margin-top:10px">
-            <label title="Your current Torn display name.">Provider Torn name<input id="set-name" value="${esc(state.settings.providerName||'')}"></label>
-            <label title="Your permanent numeric Torn user ID.">Provider Torn ID<input id="set-id" inputmode="numeric" value="${esc(state.settings.providerId||'')}"></label>
+            <label title="Editable. This is the insurer shown to the client.">Provider Torn name<input id="set-name" value="${esc(state.settings.providerName||'')}"></label>
+            <label title="Editable. Claims generated by the client are addressed to this Torn ID.">Provider Torn ID<input id="set-id" inputmode="numeric" value="${esc(state.settings.providerId||'')}"></label>
           </div>
+          <div class="hji-toolbar" style="margin-top:10px">
+            <button class="hji-btn" id="set-detect-account">Detect My Torn Account</button>
+            <button class="hji-btn" id="set-fill-provider">Use detected account as provider</button>
+          </div>
+          <div id="set-account-notice"></div>
         </div>
 
         <div class="hji-card">
-          <strong>Torn API <span class="hji-info" title="Used only for reading claim mail with the official Torn API.">i</span></strong>
-          <p class="hji-muted">The generated custom key requests only <b>user → messages</b> and <b>user → newmessages</b>.</p>
+          <strong>Torn API <span class="hji-info" title="Used for reading claim mail and identifying the API-key owner.">i</span></strong>
+          <p class="hji-muted">The custom key requests <b>user → messages</b>, <b>newmessages</b>, and <b>basic</b>. Basic is used only for the account-detection button.</p>
           <div class="hji-form">
             <label class="wide">Stored API key
               <div style="display:flex;gap:7px">
@@ -825,7 +903,7 @@
           </div>
           <div class="hji-help">
             <strong>API-key disclosure</strong>
-            <p>The key is sent only to Torn's official API when this Manager scans your messages. It is not sent to another HJI user, included in setup codes, or included in exported backups.</p>
+            <p>The key is sent only to Torn's official API when this Manager checks messages or detects the API-key account. It is not sent to another HJI user, included in setup codes, or included in exported backups.</p>
           </div>
         </div>
 
@@ -833,7 +911,7 @@
           <strong>Manager options <span class="hji-info" title="These values affect reminders and the suggested scan cadence only.">i</span></strong>
           <div class="hji-form" style="margin-top:10px">
             <label title="Policies ending within this many days show as Due soon.">Due soon warning (days)<input id="set-due" inputmode="numeric" value="${esc(state.settings.dueSoonDays||3)}"></label>
-            <label title="A reminder value for how often you intend to check claims. It does not silently scan Torn in the background.">Claim scan interval hint (minutes)<input id="set-poll" inputmode="numeric" value="${esc(state.settings.claimPollMinutes||10)}"></label>
+            <label title="A reminder value only; the Manager does not silently scan Torn in the background.">Claim scan interval hint (minutes)<input id="set-poll" inputmode="numeric" value="${esc(state.settings.claimPollMinutes||10)}"></label>
           </div>
         </div>
 
@@ -844,6 +922,13 @@
         </div>`;
 
         const keyInput = body.querySelector('#set-key');
+        const providerNameInput = body.querySelector('#set-name');
+        const providerIdInput = body.querySelector('#set-id');
+
+        renderProviderAccountNotice(body);
+
+        providerNameInput.addEventListener('input',()=>renderProviderAccountNotice(body));
+        providerIdInput.addEventListener('input',()=>renderProviderAccountNotice(body));
 
         body.querySelector('#set-toggle-key').onclick=()=>{
             const showing = keyInput.type === 'text';
@@ -853,18 +938,62 @@
 
         body.querySelector('#set-save').onclick=()=>{
             Object.assign(state.settings,{
-                providerName:body.querySelector('#set-name').value.trim(),
-                providerId:body.querySelector('#set-id').value.trim(),
+                providerName:providerNameInput.value.trim(),
+                providerId:providerIdInput.value.trim(),
                 apiKey:keyInput.value.trim(),
                 dueSoonDays:Number(body.querySelector('#set-due').value||3),
                 claimPollMinutes:Number(body.querySelector('#set-poll').value||10)
             });
             saveAll();
+            renderProviderAccountNotice(body);
             alert('Settings saved locally.');
         };
 
+        body.querySelector('#set-detect-account').onclick=async()=>{
+            const key = keyInput.value.trim();
+            if (!key) return alert('Enter the API key first.');
+
+            const btn = body.querySelector('#set-detect-account');
+            btn.disabled = true;
+            btn.textContent = 'Detecting…';
+
+            try {
+                const identity = await detectApiAccount(key);
+                state.settings.apiAccountId = identity.id;
+                state.settings.apiAccountName = identity.name;
+
+                // Save the key too, because the user has explicitly used it here.
+                state.settings.apiKey = key;
+
+                // Convenient first-time behaviour: only auto-fill empty provider fields.
+                if (!providerIdInput.value.trim()) providerIdInput.value = identity.id;
+                if (!providerNameInput.value.trim()) providerNameInput.value = identity.name;
+
+                state.settings.providerId = providerIdInput.value.trim();
+                state.settings.providerName = providerNameInput.value.trim();
+
+                saveAll();
+                renderProviderAccountNotice(body);
+                alert(`Detected API account: ${identity.name} [${identity.id}]`);
+            } catch(e) {
+                alert(`Could not detect the API-key account.\n\n${e.message}`);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = 'Detect My Torn Account';
+            }
+        };
+
+        body.querySelector('#set-fill-provider').onclick=()=>{
+            if (!state.settings.apiAccountId) return alert('Detect the API-key account first.');
+            providerIdInput.value = state.settings.apiAccountId;
+            providerNameInput.value = state.settings.apiAccountName || '';
+            state.settings.providerId = providerIdInput.value.trim();
+            state.settings.providerName = providerNameInput.value.trim();
+            saveAll();
+            renderProviderAccountNotice(body);
+        };
+
         body.querySelector('#set-keydocs').onclick=()=>{
-            // Using a real anchor avoids Torn/PDA treating window.open() as an internal SPA/user route.
             const a=document.createElement('a');
             a.href=customKeyUrl;
             a.target='_blank';
@@ -883,7 +1012,8 @@
             const key = keyInput.value.trim();
             if (!key) return alert('Paste your HJI custom API key first.');
             const btn = body.querySelector('#set-test-key');
-            btn.disabled = true; btn.textContent = 'Testing…';
+            btn.disabled = true;
+            btn.textContent = 'Testing…';
             try {
                 let data;
                 try { data = await requestApi(`${API_BASE}/user/newmessages?limit=1`, key); }
@@ -891,9 +1021,10 @@
                 if (data?.error) throw new Error(data.error.error || data.error.message || JSON.stringify(data.error));
                 alert('The API key worked for the HJI message check.');
             } catch(e) {
-                alert(`API key test failed.\n\n${e.message}\n\nUse the HJI custom-key button and allow messages/newmessages.`);
+                alert(`API key test failed.\n\n${e.message}\n\nUse the HJI custom-key button and allow messages/newmessages/basic.`);
             } finally {
-                btn.disabled = false; btn.textContent = 'Test key';
+                btn.disabled = false;
+                btn.textContent = 'Test key';
             }
         };
 
@@ -901,22 +1032,41 @@
             const safeState=JSON.parse(JSON.stringify(state));
             if(safeState.settings)safeState.settings.apiKey='';
             const blob=new Blob([JSON.stringify({version:VERSION,exportedAt:nowISO(),state:safeState},null,2)],{type:'application/json'});
-            const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`torn-hji-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+            const a=document.createElement('a');
+            a.href=URL.createObjectURL(blob);
+            a.download=`torn-hji-backup-${new Date().toISOString().slice(0,10)}.json`;
+            a.click();
+            setTimeout(()=>URL.revokeObjectURL(a.href),1000);
         };
 
         body.querySelector('#set-import').onclick=()=>{
-            const inp=document.createElement('input');inp.type='file';inp.accept='.json,application/json';
-            inp.onchange=()=>{const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{
-                try{
-                    const obj=JSON.parse(r.result);if(!obj.state)throw new Error('Missing state');
-                    if(!confirm('Replace current local HJI manager data with this backup?'))return;
-                    const existingKey=state.settings?.apiKey||'';
-                    state=obj.state;
-                    state.settings=state.settings||{};
-                    if(!state.settings.apiKey)state.settings.apiKey=existingKey;
-                    saveAll();renderTabs();renderTab();alert('Backup imported.');
-                }catch(e){alert('Import failed: '+e.message)}
-            };r.readAsText(f)};inp.click();
+            const inp=document.createElement('input');
+            inp.type='file';
+            inp.accept='.json,application/json';
+            inp.onchange=()=>{
+                const f=inp.files[0];
+                if(!f)return;
+                const r=new FileReader();
+                r.onload=()=>{
+                    try{
+                        const obj=JSON.parse(r.result);
+                        if(!obj.state)throw new Error('Missing state');
+                        if(!confirm('Replace current local HJI manager data with this backup?'))return;
+                        const existingKey=state.settings?.apiKey||'';
+                        state=obj.state;
+                        state.settings=normalizeSettings(state.settings||{});
+                        if(!state.settings.apiKey)state.settings.apiKey=existingKey;
+                        saveAll();
+                        renderTabs();
+                        renderTab();
+                        alert('Backup imported.');
+                    }catch(e){
+                        alert('Import failed: '+e.message);
+                    }
+                };
+                r.readAsText(f);
+            };
+            inp.click();
         };
     }
 
