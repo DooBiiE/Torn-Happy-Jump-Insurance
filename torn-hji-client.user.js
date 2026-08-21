@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Client
 // @namespace    torn-hji
-// @version      0.3.2
+// @version      0.3.4
 // @description  Insured-user client for importing Happy Jump policies and preparing structured Torn Mail claims.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -16,7 +16,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.3.2';
+    const VERSION = '0.3.4';
     const PREFIX='torn_hji_client_v2_';
     const LEGACY_PREFIX='torn_hji_client_v1_';
     const CLAIM_PREFIX='[HJI CLAIM]';
@@ -291,41 +291,90 @@
     function styles(){
         if(document.getElementById('hji-client-style'))return;
         const s=document.createElement('style');s.id='hji-client-style';s.textContent=`
-        #hji-client-launch{position:fixed;left:16px;bottom:18px;z-index:999999;background:#20252b;color:#fff;border:1px solid #666;border-radius:999px;padding:10px 14px;font:600 13px Arial;box-shadow:0 3px 14px #0008;cursor:grab;user-select:none;touch-action:none}
-        #hji-client-launch:active{cursor:grabbing}
+        :root{--hc-bg:#202020;--hc-panel:#2b2b2b;--hc-border:#4a4a4a;--hc-text:#e8e8e8;--hc-muted:#aaa;--hc-input:#181818}
+        #hji-client-launch{position:fixed;left:16px;bottom:18px;z-index:999999;background:linear-gradient(#4a4a4a,#303030);color:#fff;border:1px solid #666;border-radius:5px;padding:9px 13px;font:600 13px Arial,sans-serif;box-shadow:0 2px 8px #0009;cursor:grab;user-select:none;touch-action:none}
         #hji-client-overlay{position:fixed;inset:0;z-index:1000000;background:transparent;pointer-events:none}
-        #hji-client-app{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(700px,90vw);height:min(620px,78vh);min-width:300px;min-height:300px;max-width:97vw;max-height:92vh;overflow:hidden;background:#181b20;color:#ddd;border:1px solid #555;border-radius:10px;font:14px Arial;box-shadow:0 12px 35px #000b;pointer-events:auto;resize:both;display:flex;flex-direction:column}
+        #hji-client-app{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(700px,90vw);height:min(620px,78vh);min-width:300px;min-height:300px;max-width:97vw;max-height:92vh;overflow:hidden;background:var(--hc-bg);color:var(--hc-text);border:1px solid #555;border-radius:7px;font:14px Arial,sans-serif;box-shadow:0 12px 35px #000c;pointer-events:auto;resize:both;display:flex;flex-direction:column}
         #hji-client-app.hc-compact{width:min(560px,86vw);height:min(500px,66vh)}
-        .hc-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:12px;background:#242930;border-bottom:1px solid #444;cursor:move;user-select:none;touch-action:none}.hc-head h2{margin:0;color:#fff;font-size:18px}.hc-head-actions{display:flex;gap:6px}
-        .hc-body{padding:13px;overflow:auto;flex:1}.hc-card{background:#22262c;border:1px solid #3e444d;border-radius:8px;padding:12px;margin-bottom:10px}.hc-card h3{margin:0 0 8px;color:#fff}
-        .hc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.hc-field{background:#171a1f;padding:9px;border-radius:6px}.hc-field small{display:block;color:#999;margin-bottom:3px}
-        .hc-btn{background:#3a414b;color:#fff;border:1px solid #59616d;border-radius:6px;padding:9px 11px;cursor:pointer}.hc-btn.good{background:#315d3e}.hc-btn.danger{background:#653535}.hc-close,.hc-size{background:#3b414b;color:#fff;border:0;border-radius:6px;padding:7px 10px;cursor:pointer}
-        .hc-form{display:grid;grid-template-columns:1fr 1fr;gap:9px}.hc-form label{display:flex;flex-direction:column;gap:5px}.hc-form .wide{grid-column:1/-1}.hc-form input,.hc-form select,.hc-form textarea{box-sizing:border-box;width:100%;background:#111419;color:#fff;border:1px solid #555;border-radius:6px;padding:9px}.hc-form textarea{min-height:90px}
-        .hc-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.hc-muted{font-size:12px;color:#aaa}.hc-policy{border-left:4px solid #59616d}.hc-resize-grip{position:absolute;right:0;bottom:0;width:28px;height:28px;z-index:20;cursor:nwse-resize;touch-action:none}.hc-resize-grip:after{content:'↘';position:absolute;right:5px;bottom:3px;color:#aaa;font-size:17px;}
-        .hc-help{background:#1b2229;border:1px solid #405165;border-radius:8px;padding:10px;margin-bottom:10px}.hc-help p{margin:5px 0}.hc-help details{margin-top:6px}.hc-help summary{cursor:pointer;font-weight:700}
-        @media(max-width:600px){#hji-client-launch{left:9px;bottom:10px;padding:9px 12px}#hji-client-app{width:90vw;height:72vh;max-height:82vh;resize:both}#hji-client-app.hc-compact{width:84vw;height:60vh}.hc-grid,.hc-form{grid-template-columns:1fr}.hc-form .wide{grid-column:auto}.hc-head h2{font-size:15px}}
+        .hc-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;background:linear-gradient(#3b3b3b,#292929);border-bottom:1px solid #555;cursor:move;user-select:none;touch-action:none}.hc-head h2{margin:0;color:#f5f5f5;font-size:18px}.hc-head-actions{display:flex;gap:6px}
+        .hc-body{padding:12px;overflow:auto;flex:1;background:var(--hc-bg);color:var(--hc-text)}
+        .hc-card{background:var(--hc-panel);border:1px solid var(--hc-border);border-radius:5px;padding:11px;margin-bottom:10px;color:var(--hc-text)}.hc-card h3{margin:0 0 8px;color:#fff}
+        .hc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.hc-field{background:#252525;padding:9px;border-radius:4px;color:#eee}.hc-field small{display:block;color:#aaa;margin-bottom:3px}
+        .hc-btn{background:linear-gradient(#4a4a4a,#333);color:#f5f5f5!important;border:1px solid #606060;border-radius:4px;padding:8px 10px;cursor:pointer}.hc-btn.good{background:linear-gradient(#4f7e5e,#365942);border-color:#618e6c}.hc-btn.danger{background:linear-gradient(#8f4343,#683030);border-color:#a95656}.hc-close,.hc-size{background:#444;color:#f5f5f5;border:1px solid #666;border-radius:4px;padding:6px 9px;cursor:pointer}
+        .hc-form{display:grid;grid-template-columns:1fr 1fr;gap:9px}.hc-form label{display:flex;flex-direction:column;gap:5px;color:#ddd;font-weight:600}.hc-form .wide{grid-column:1/-1}
+        .hc-form input,.hc-form select,.hc-form textarea{box-sizing:border-box;width:100%;background:var(--hc-input)!important;color:#f2f2f2!important;border:1px solid #5a5a5a;border-radius:4px;padding:8px;-webkit-text-fill-color:#f2f2f2!important;caret-color:#fff}.hc-form textarea{min-height:90px}.hc-form input::placeholder,.hc-form textarea::placeholder{color:#8e8e8e!important;-webkit-text-fill-color:#8e8e8e!important}.hc-form select option{background:#222;color:#f2f2f2}
+        .hc-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.hc-muted{font-size:12px;color:#aaa!important}.hc-help{background:#252d33;border:1px solid #465966;border-radius:5px;padding:10px;margin-bottom:10px;color:#e1e1e1}.hc-help p{margin:5px 0}.hc-help details{margin-top:6px}.hc-help summary{cursor:pointer;font-weight:700;color:#dceaf3}
+        .hc-policy-active{background:#243329;border-left:4px solid #4fa96c}.hc-policy-due{background:#403823;border-left:4px solid #d6aa43}.hc-policy-expired{background:#422828;border-left:4px solid #c94b4b}.hc-policy-cancelled{background:#303030;border-left:4px solid #777;opacity:.72}.hc-policy-used{background:#30343a;border-left:4px solid #718096;opacity:.82}
+        .hc-status-active{color:#75d28d;font-weight:700}.hc-status-due{color:#f0c866;font-weight:700}.hc-status-expired{color:#f18181;font-weight:700}.hc-status-muted{color:#aaa;font-weight:700}
+        .hc-resize-grip{position:absolute;right:0;bottom:0;width:30px;height:30px;z-index:20;cursor:nwse-resize;touch-action:none}.hc-resize-grip:after{content:'↘';position:absolute;right:5px;bottom:3px;color:#bbb;font-size:18px}
+        @media(max-width:600px){#hji-client-launch{left:9px;bottom:10px;padding:8px 11px}#hji-client-app{width:90vw;height:72vh;max-height:82vh}#hji-client-app.hc-compact{width:84vw;height:60vh}.hc-grid,.hc-form{grid-template-columns:1fr}.hc-form .wide{grid-column:auto}.hc-head h2{font-size:15px}}
         `;document.head.appendChild(s);
+    }
+
+    function policyStatus(p){
+        if (p.status === 'cancelled') return ['Cancelled','hc-policy-cancelled','hc-status-muted'];
+        if (p.type === 'single') {
+            if (p.used) return ['Used','hc-policy-used','hc-status-muted'];
+            return ['Active','hc-policy-active','hc-status-active'];
+        }
+        if (!p.endDate) return ['Active','hc-policy-active','hc-status-active'];
+        const diff = new Date(p.endDate).getTime() - Date.now();
+        if (diff < 0) return ['Expired','hc-policy-expired','hc-status-expired'];
+        if (diff <= 3 * 86400000) return ['Due soon','hc-policy-due','hc-status-due'];
+        return ['Active','hc-policy-active','hc-status-active'];
+    }
+
+    function detectCurrentTornUser(){
+        const selectors = [
+            'a[href*="profiles.php?XID="]',
+            'a[href*="/profiles.php?XID="]'
+        ];
+        for (const sel of selectors) {
+            for (const a of document.querySelectorAll(sel)) {
+                const href = String(a.getAttribute('href') || '');
+                const m = href.match(/XID=(\d+)/i);
+                const label = (a.textContent || '').trim();
+                if (!m || !label) continue;
+                const name = label.replace(/\s*\[\d+\]\s*$/, '').trim();
+                if (name && name.length < 40) return {id:m[1], name, source:'Torn page'};
+            }
+        }
+        for (const n of document.querySelectorAll('[data-user-id],[data-player-id],[data-userid]')) {
+            const id = n.getAttribute('data-user-id') || n.getAttribute('data-player-id') || n.getAttribute('data-userid');
+            if (!id || !/^\d+$/.test(id)) continue;
+            const name = (n.getAttribute('data-user-name') || n.getAttribute('data-name') || n.textContent || '').trim();
+            return {id, name:name.length < 40 ? name : '', source:'Torn page data'};
+        }
+        return null;
+    }
+
+    function autoFillCurrentUser(){
+        const found = detectCurrentTornUser();
+        if (!found) return null;
+        if (!state.claimantId) state.claimantId = String(found.id);
+        if (!state.claimantName && found.name) state.claimantName = String(found.name);
+        save();
+        return found;
+    }
+
+    function policyOwnerMatches(p){
+        if (!state.claimantId || !p.insuredId) return null;
+        return String(state.claimantId) === String(p.insuredId);
     }
 
     let overlay=null;
     function open(){
         styles();
         try{
+            autoFillCurrentUser();
             if(overlay)overlay.remove();
             overlay=document.createElement('div');overlay.id='hji-client-overlay';overlay.innerHTML=`<div id="hji-client-app">
-              <div class="hc-head">
-                <div><h2>🛡️ My Happy Jump Insurance</h2><div class="hc-muted">v${esc(VERSION)} · drag this header · resize from the lower-right</div></div>
-                <div class="hc-head-actions"><button class="hc-size" title="Toggle a smaller window">Size</button><button class="hc-close">Close</button></div>
-              </div>
+              <div class="hc-head"><div><h2>🛡️ My Happy Jump Insurance</h2><div class="hc-muted">v${esc(VERSION)} · drag this header · resize from the lower-right</div></div><div class="hc-head-actions"><button class="hc-size">Size</button><button class="hc-close">Close</button></div></div>
               <div class="hc-body">
-                <div class="hc-help"><strong>How this works</strong><p>Your insurer gives you an HJI setup code. Import it here, then choose that policy when you need to prepare a claim.</p><details><summary>Can I use more than one insurer?</summary><p>Yes. You can import several policies from different providers and choose the correct one when making a claim.</p></details></div>
+                <div class="hc-help"><strong>How this works</strong><p>Your insurer gives you an HJI setup code. Import it here, then choose that policy when you need to prepare a claim.</p><p><b>Your Torn account:</b> ${esc(state.claimantName||'Unknown')} ${state.claimantId?`[${esc(state.claimantId)}]`:''}</p><details><summary>Does the Client need an API key?</summary><p>No. The Client does not require an API key.</p></details></div>
                 <div class="hc-actions" style="margin:0 0 10px"><button class="hc-btn good" id="hc-import">Import policy setup code</button><button class="hc-btn" id="hc-claim" ${state.policies.length?'':'disabled'}>Submit claim</button><button class="hc-btn" id="hc-settings">Settings</button></div>
-                <div class="hc-card"><h3>My policies</h3>
-                  ${state.policies.length?state.policies.map(p=>policyHtml(p)).join(''):'<div class="hc-muted">No policies imported yet. Ask your insurer for an HJI client setup code.</div>'}
-                </div>
-                <div class="hc-card"><h3>My prepared claims</h3>
-                  ${state.claims.length?state.claims.slice().reverse().map(c=>`<div class="hc-field" style="margin-bottom:6px"><strong>${esc(c.reference)}</strong><br><small>${esc(new Date(c.createdAt).toLocaleString('en-GB'))} · ${esc(c.providerName||'')}</small>${esc(c.summary||'')}</div>`).join(''):'<div class="hc-muted">No claims prepared yet.</div>'}
-                </div>
+                <div class="hc-card"><h3>My policies</h3>${state.policies.length?state.policies.map(p=>policyHtml(p)).join(''):'<div class="hc-muted">No policies imported yet. Ask your insurer for an HJI client setup code.</div>'}</div>
+                <div class="hc-card"><h3>My prepared claims</h3>${state.claims.length?state.claims.slice().reverse().map(c=>`<div class="hc-field" style="margin-bottom:6px"><strong>${esc(c.reference)}</strong><br><small>${esc(new Date(c.createdAt).toLocaleString('en-GB'))} · ${esc(c.providerName||'')}</small>${esc(c.summary||'')}</div>`).join(''):'<div class="hc-muted">No claims prepared yet.</div>'}</div>
               </div>
               <div class="hc-resize-grip" title="Drag to resize"></div>
             </div>`;
@@ -346,13 +395,18 @@
     }
 
     function policyHtml(p){
-        return `<div class="hc-card hc-policy">
+        const [label,rowClass,statusClass]=policyStatus(p);
+        const ownerMatch=policyOwnerMatches(p);
+        const ownerLine=ownerMatch===false?`<div class="hc-help" style="margin-top:8px;background:#452b2b;border-color:#7b4848"><strong>Policy-owner mismatch</strong><p>This policy was issued to ${esc(p.insuredName||'Unknown')} [${esc(p.insuredId||'')}], but this Client is set to ${esc(state.claimantName||'Unknown')} [${esc(state.claimantId||'')}].</p></div>`:'';
+        return `<div class="hc-card ${rowClass}">
           <div class="hc-grid">
             <div class="hc-field"><small>Provider</small>${esc(p.providerName||'')} [${esc(p.providerId||'')}]</div>
             <div class="hc-field"><small>Tier</small>${esc(p.tierName||'')}</div>
             <div class="hc-field"><small>Coverage</small>${esc(p.coverage||'—')}</div>
             <div class="hc-field"><small>${p.type==='single'?'Policy type':'Valid until'}</small>${p.type==='single'?'Single jump':dateOnly(p.endDate)}</div>
-          </div>
+            <div class="hc-field"><small>Status</small><span class="${statusClass}">${label}</span></div>
+            <div class="hc-field"><small>Issued to</small>${esc(p.insuredName||'')} [${esc(p.insuredId||'')}]</div>
+          </div>${ownerLine}
           <div class="hc-actions"><button class="hc-btn danger" data-remove-policy="${esc(p.localId)}">Remove from this device</button></div>
         </div>`;
     }
@@ -398,14 +452,21 @@
 
     function settingsModal(){
         const body=overlay.querySelector('.hc-body');
+        const detected=detectCurrentTornUser();
         body.innerHTML=`<div class="hc-card"><h3>Client settings</h3>
-          <div class="hc-help"><p>Your Torn ID is used to check that an imported policy was actually issued to you. The Client does not need the insurer's API key.</p></div>
-          <div class="hc-form">
-            <label>Your Torn name<input id="cs-cname" value="${esc(state.claimantName||'')}"></label>
-            <label>Your Torn ID<input id="cs-cid" inputmode="numeric" value="${esc(state.claimantId||'')}"></label>
-          </div>
-          <div class="hc-actions"><button class="hc-btn good" id="cs-save">Save</button><button class="hc-btn" id="cs-back">Back</button></div>
+          <div class="hc-help"><p>The Client tries to detect your logged-in Torn account automatically. These fields remain editable as a fallback.</p><p>No API key is required.</p></div>
+          <div class="hc-form"><label>Your Torn name<input id="cs-cname" value="${esc(state.claimantName||'')}"></label><label>Your Torn ID<input id="cs-cid" inputmode="numeric" value="${esc(state.claimantId||'')}"></label></div>
+          <div class="hc-actions"><button class="hc-btn good" id="cs-detect">Detect My Torn Account</button><button class="hc-btn good" id="cs-save">Save</button><button class="hc-btn" id="cs-back">Back</button></div>
+          <div class="hc-muted" style="margin-top:8px">${detected?`Detected from ${esc(detected.source)}: ${esc(detected.name||'Unknown')} [${esc(detected.id)}]`:'No account details were detected from the current Torn page yet.'}</div>
         </div>`;
+        body.querySelector('#cs-detect').onclick=()=>{
+            const found=detectCurrentTornUser();
+            if(!found)return alert('Could not detect your Torn account from the current page. You can still enter the fields manually.');
+            body.querySelector('#cs-cid').value=found.id;
+            if(found.name)body.querySelector('#cs-cname').value=found.name;
+            state.claimantId=found.id;if(found.name)state.claimantName=found.name;save();
+            alert(`Detected ${found.name||'Torn user'} [${found.id}]`);
+        };
         body.querySelector('#cs-save').onclick=()=>{state.claimantName=body.querySelector('#cs-cname').value.trim();state.claimantId=body.querySelector('#cs-cid').value.trim();save();open();};
         body.querySelector('#cs-back').onclick=open;
     }
@@ -430,6 +491,7 @@
         body.querySelector('#cc-mail').onclick=()=>{
             const p=state.policies.find(x=>x.localId===body.querySelector('#cc-policy').value);
             if(!p)return alert('Select a policy.');
+            if(policyOwnerMatches(p)===false){if(!confirm(`This policy was issued to ${p.insuredName||'Unknown'} [${p.insuredId}], but this Client is set to ${state.claimantName||'Unknown'} [${state.claimantId}].\n\nPrepare the claim anyway?`))return;}
             const reference=body.querySelector('#cc-ref').value.trim();
             const details=body.querySelector('#cc-details').value.trim();
             const evidence=body.querySelector('#cc-evidence').value.trim();
@@ -505,6 +567,7 @@
 
     function boot(){
         if (!document.body) return;
+        autoFillCurrentUser();
         launcher();
         tryFillPendingMail();
     }
