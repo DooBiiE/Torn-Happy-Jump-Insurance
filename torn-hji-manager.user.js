@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.1.0
+// @version      0.3.0
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
-// @author       YourName
+// @author       DooBiiE
 // @match        https://www.torn.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=torn.com
 // @grant        GM_xmlhttpRequest
@@ -11,15 +11,15 @@
 // @grant        GM_setValue
 // @connect      api.torn.com
 // @run-at       document-idle
-// @downloadURL  https://raw.githubusercontent.com/YOUR_GITHUB/YOUR_REPO/main/torn-hji-manager.user.js
-// @updateURL    https://raw.githubusercontent.com/YOUR_GITHUB/YOUR_REPO/main/torn-hji-manager.user.js
+// @downloadURL  https://raw.githubusercontent.com/DooBiiE/Torn-Happy-Jump-Insurance/main/torn-hji-manager.user.js
+// @updateURL    https://raw.githubusercontent.com/DooBiiE/Torn-Happy-Jump-Insurance/main/torn-hji-manager.user.js
 // ==/UserScript==
 
 (() => {
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '0.1.0';
+    const VERSION = (typeof GM_info !== 'undefined' && GM_info?.script?.version) || '0.3.0';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const API_BASE = 'https://api.torn.com/v2';
@@ -52,6 +52,153 @@
     const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const money = n => Number(n || 0).toLocaleString('en-GB', {maximumFractionDigits: 0});
     const dateOnly = v => v ? new Date(v).toLocaleDateString('en-GB') : '—';
+
+    const encodeSetup = obj => {
+        const bytes = new TextEncoder().encode(JSON.stringify(obj));
+        let binary = '';
+        bytes.forEach(b => binary += String.fromCharCode(b));
+        return 'HJI1.' + btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+    };
+
+    async function copyText(text) {
+        try {
+            await navigator.clipboard.writeText(text);
+            return true;
+        } catch {}
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        let ok = false;
+        try { ok = document.execCommand('copy'); } catch {}
+        ta.remove();
+        return ok;
+    }
+
+    function loadPosition(key) {
+        const pos = storage.get(key, null);
+        if (!pos || !Number.isFinite(pos.left) || !Number.isFinite(pos.top)) return null;
+        return pos;
+    }
+
+    function makeDraggable(el, handle, storageKey, clickHandler = null) {
+        const saved = loadPosition(storageKey);
+        if (saved) {
+            el.style.left = `${Math.max(0, Math.min(saved.left, window.innerWidth - 40))}px`;
+            el.style.top = `${Math.max(0, Math.min(saved.top, window.innerHeight - 40))}px`;
+            el.style.right = 'auto';
+            el.style.bottom = 'auto';
+        }
+
+        let dragging = false;
+        let moved = false;
+        let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+
+        handle.style.touchAction = 'none';
+        handle.addEventListener('pointerdown', e => {
+            if (e.button !== undefined && e.button !== 0) return;
+            if (e.target.closest('button,input,select,textarea,a')) return;
+            dragging = true;
+            moved = false;
+            const r = el.getBoundingClientRect();
+            startX = e.clientX;
+            startY = e.clientY;
+            startLeft = r.left;
+            startTop = r.top;
+            try { handle.setPointerCapture(e.pointerId); } catch {}
+        });
+
+        handle.addEventListener('pointermove', e => {
+            if (!dragging) return;
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            if (Math.abs(dx) + Math.abs(dy) > 5) moved = true;
+            const maxLeft = Math.max(0, window.innerWidth - Math.min(el.offsetWidth, 60));
+            const maxTop = Math.max(0, window.innerHeight - Math.min(el.offsetHeight, 40));
+            el.style.left = `${Math.max(0, Math.min(startLeft + dx, maxLeft))}px`;
+            el.style.top = `${Math.max(0, Math.min(startTop + dy, maxTop))}px`;
+            el.style.right = 'auto';
+            el.style.bottom = 'auto';
+        });
+
+        const end = e => {
+            if (!dragging) return;
+            dragging = false;
+            try { handle.releasePointerCapture(e.pointerId); } catch {}
+            const r = el.getBoundingClientRect();
+            storage.set(storageKey, {left: Math.round(r.left), top: Math.round(r.top)});
+            if (!moved && clickHandler) clickHandler();
+        };
+        handle.addEventListener('pointerup', end);
+        handle.addEventListener('pointercancel', end);
+    }
+
+    function buildSetupCode(policy) {
+        const customer = getCustomer(policy.customerId);
+        const tier = getTier(policy.tierId);
+        if (!customer || !tier) throw new Error('Customer or tier is missing.');
+        if (!state.settings.providerId || !state.settings.providerName) {
+            throw new Error('Set the provider Torn name and Torn ID in Settings first.');
+        }
+
+        return encodeSetup({
+            schema: 'torn-hji-policy',
+            version: 1,
+            issuedAt: nowISO(),
+            provider: {
+                id: String(state.settings.providerId),
+                name: state.settings.providerName
+            },
+            insured: {
+                id: String(customer.tornId),
+                name: customer.name
+            },
+            policy: {
+                id: policy.id,
+                tierId: tier.id,
+                tierName: tier.name,
+                type: tier.type,
+                coverage: tier.coverage,
+                maxDvds: Number(tier.maxDvds || 0),
+                startDate: policy.startDate || null,
+                endDate: policy.endDate || null,
+                cashPrice: Number(tier.cashPrice || 0),
+                itemName: tier.itemName || '',
+                itemQty: Number(tier.itemQty || 0)
+            }
+        });
+    }
+
+    function setupCodeModal(policy) {
+        let code;
+        try { code = buildSetupCode(policy); }
+        catch (e) { alert(e.message); return; }
+
+        const customer = getCustomer(policy.customerId);
+        const tier = getTier(policy.tierId);
+        const modal = createModal('Client setup code');
+        modal.content.innerHTML += `
+          <div class="hji-help">
+            <strong>What is this?</strong>
+            <p>Send this setup code to the insured player. Their HJI Client can import it to link this policy to you.</p>
+            <p>The code contains provider, insured-player and policy details only. <b>Your API key is never included.</b></p>
+          </div>
+          <div class="hji-card">
+            <strong>${esc(customer?.name || '')} [${esc(customer?.tornId || '')}]</strong>
+            <p>${esc(tier?.name || '')} · ${esc(tier?.coverage || '')}</p>
+          </div>
+          <label style="display:flex;flex-direction:column;gap:5px;margin-top:10px">
+            Setup code
+            <textarea id="hji-setup-code" readonly style="min-height:130px">${esc(code)}</textarea>
+          </label>`;
+        modal.el.querySelector('[data-save]').textContent = 'Copy code';
+        modal.addSave(async () => {
+            await copyText(code);
+            alert('Client setup code copied.');
+        });
+    }
 
     const defaultTiers = [
         {
@@ -134,23 +281,33 @@
         const s = document.createElement('style');
         s.id = 'hji-manager-style';
         s.textContent = `
-        #hji-launcher{position:fixed;right:16px;bottom:18px;z-index:999999;background:#20252b;color:#fff;border:1px solid #666;border-radius:999px;padding:10px 14px;font:600 13px Arial;box-shadow:0 3px 14px #0008;cursor:pointer}
-        #hji-overlay{position:fixed;inset:0;z-index:1000000;background:#0009;display:flex;align-items:center;justify-content:center;padding:10px}
-        #hji-app{width:min(1150px,98vw);height:min(820px,94vh);background:#171a1f;color:#ddd;border:1px solid #555;border-radius:10px;overflow:hidden;font:14px Arial;display:flex;flex-direction:column}
-        .hji-head{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:#23272e;border-bottom:1px solid #444}
-        .hji-head h2{margin:0;color:#fff;font-size:18px}.hji-close{background:#3b414b;color:#fff;border:0;border-radius:6px;padding:7px 11px;cursor:pointer}
+        #hji-launcher{position:fixed;left:16px;bottom:18px;z-index:999999;background:#20252b;color:#fff;border:1px solid #666;border-radius:999px;padding:10px 14px;font:600 13px Arial;box-shadow:0 3px 14px #0008;cursor:grab;user-select:none;touch-action:none}
+        #hji-launcher:active{cursor:grabbing}
+        #hji-overlay{position:fixed;inset:0;z-index:1000000;background:transparent;pointer-events:none}
+        #hji-app{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(980px,92vw);height:min(700px,82vh);min-width:320px;min-height:320px;max-width:98vw;max-height:94vh;background:#171a1f;color:#ddd;border:1px solid #555;border-radius:10px;overflow:hidden;font:14px Arial;display:flex;flex-direction:column;box-shadow:0 12px 35px #000b;pointer-events:auto;resize:both}
+        #hji-app.hji-compact{width:min(760px,88vw);height:min(560px,72vh)}
+        .hji-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:11px 13px;background:#23272e;border-bottom:1px solid #444;cursor:move;user-select:none;touch-action:none}
+        .hji-head h2{margin:0;color:#fff;font-size:18px}.hji-head-actions{display:flex;gap:6px}.hji-close,.hji-size{background:#3b414b;color:#fff;border:0;border-radius:6px;padding:7px 10px;cursor:pointer}
         .hji-tabs{display:flex;gap:4px;overflow:auto;padding:8px;background:#1d2025;border-bottom:1px solid #393d43}
         .hji-tab{white-space:nowrap;background:#2b3037;color:#ddd;border:1px solid #444;border-radius:6px;padding:8px 10px;cursor:pointer}.hji-tab.active{background:#555f6d;color:#fff}
         .hji-body{padding:12px;overflow:auto;flex:1}.hji-grid{display:grid;grid-template-columns:repeat(4,minmax(140px,1fr));gap:10px}
-        .hji-card{background:#22262c;border:1px solid #3d424a;border-radius:8px;padding:12px}.hji-card b{display:block;color:#fff;font-size:18px;margin-top:5px}
+        .hji-card{background:#22262c;border:1px solid #3d424a;border-radius:8px;padding:12px;margin-bottom:10px}.hji-card b{display:block;color:#fff;font-size:18px;margin-top:5px}
         .hji-toolbar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}.hji-btn{background:#3a414b;color:#fff;border:1px solid #59616d;border-radius:6px;padding:8px 10px;cursor:pointer}.hji-btn.danger{background:#653535}.hji-btn.good{background:#315d3e}
-        .hji-table{width:100%;border-collapse:collapse;background:#20242a}.hji-table th,.hji-table td{padding:8px;border-bottom:1px solid #3b4047;text-align:left;vertical-align:top}.hji-table th{background:#2a2f36;color:#fff;position:sticky;top:0}
+        .hji-table-wrap{overflow:auto;max-width:100%}.hji-table{width:100%;border-collapse:collapse;background:#20242a}.hji-table th,.hji-table td{padding:8px;border-bottom:1px solid #3b4047;text-align:left;vertical-align:top}.hji-table th{background:#2a2f36;color:#fff;position:sticky;top:0}
         .hji-status{font-weight:700}.hji-active{color:#72d88b}.hji-due{color:#f5d06f}.hji-expired{color:#ff8585}.hji-pending{color:#f5d06f}
         .hji-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.hji-form label{display:flex;flex-direction:column;gap:5px}.hji-form .wide{grid-column:1/-1}
         .hji-form input,.hji-form select,.hji-form textarea{box-sizing:border-box;width:100%;background:#111419;color:#fff;border:1px solid #555;border-radius:6px;padding:9px}.hji-form textarea{min-height:80px}
-        .hji-modal-bg{position:absolute;inset:0;background:#000b;display:flex;align-items:center;justify-content:center;padding:12px}.hji-modal{width:min(620px,96vw);max-height:88vh;overflow:auto;background:#22262c;border:1px solid #666;border-radius:8px;padding:14px}
-        .hji-modal h3{margin-top:0;color:#fff}.hji-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}.hji-muted{color:#999;font-size:12px}.hji-pill{display:inline-block;padding:3px 7px;border-radius:999px;background:#343a42}
-        @media(max-width:700px){#hji-launcher{right:9px;bottom:10px}.hji-grid{grid-template-columns:repeat(2,1fr)}.hji-form{grid-template-columns:1fr}.hji-form .wide{grid-column:auto}.hji-table{font-size:12px}.hji-table th,.hji-table td{padding:6px}#hji-app{height:96vh;width:99vw}}
+        .hji-modal-bg{position:absolute;inset:0;background:#000b;display:flex;align-items:center;justify-content:center;padding:12px;z-index:5}.hji-modal{width:min(620px,94%);max-height:88%;overflow:auto;background:#22262c;border:1px solid #666;border-radius:8px;padding:14px}
+        .hji-modal h3{margin-top:0;color:#fff}.hji-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}.hji-muted{color:#aaa;font-size:12px}.hji-pill{display:inline-block;padding:3px 7px;border-radius:999px;background:#343a42}
+        .hji-help{background:#1b2229;border:1px solid #405165;border-radius:8px;padding:10px;margin:8px 0 12px}.hji-help strong{color:#fff}.hji-help p{margin:5px 0}.hji-help details{margin-top:6px}.hji-help summary{cursor:pointer;font-weight:700;color:#dfe8f2}
+        .hji-info{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;background:#48515c;color:#fff;font-size:11px;font-weight:bold;cursor:help;margin-left:4px}
+        @media(max-width:700px){
+          #hji-launcher{left:9px;bottom:10px;padding:9px 12px}
+          #hji-app{width:92vw;height:76vh;max-height:84vh;min-height:300px;resize:both}
+          #hji-app.hji-compact{width:86vw;height:66vh}
+          .hji-grid{grid-template-columns:repeat(2,1fr)}.hji-form{grid-template-columns:1fr}.hji-form .wide{grid-column:auto}
+          .hji-table{font-size:12px}.hji-table th,.hji-table td{padding:6px}.hji-head h2{font-size:15px}
+        }
         `;
         document.head.appendChild(s);
     }
@@ -176,17 +333,29 @@
     function openApp(tab='dashboard') {
         injectStyles();
         currentTab = tab;
-        if (overlay) overlay.remove();
-        overlay = document.createElement('div');
-        overlay.id = 'hji-overlay';
-        overlay.innerHTML = `<div id="hji-app">
-          <div class="hji-head"><div><h2>🛡️ Happy Jump Insurance Manager</h2><div class="hji-muted">v${esc(VERSION)} · local manager database</div></div><button class="hji-close">Close</button></div>
-          <div class="hji-tabs"></div><div class="hji-body"></div>
-        </div>`;
-        document.body.appendChild(overlay);
-        overlay.querySelector('.hji-close').onclick = () => { overlay.remove(); overlay=null; };
-        renderTabs();
-        renderTab();
+        try {
+            if (overlay) overlay.remove();
+            overlay = document.createElement('div');
+            overlay.id = 'hji-overlay';
+            overlay.innerHTML = `<div id="hji-app">
+              <div class="hji-head">
+                <div><h2>🛡️ Happy Jump Insurance Manager</h2><div class="hji-muted">v${esc(VERSION)} · drag this header · resize from the lower-right corner</div></div>
+                <div class="hji-head-actions"><button class="hji-size" title="Toggle a smaller window">Size</button><button class="hji-close">Close</button></div>
+              </div>
+              <div class="hji-tabs"></div><div class="hji-body"></div>
+            </div>`;
+            document.body.appendChild(overlay);
+            const app = overlay.querySelector('#hji-app');
+            overlay.querySelector('.hji-close').onclick = () => { overlay.remove(); overlay=null; };
+            overlay.querySelector('.hji-size').onclick = () => app.classList.toggle('hji-compact');
+            makeDraggable(app, overlay.querySelector('.hji-head'), 'windowPos');
+            renderTabs();
+            renderTab();
+        } catch (e) {
+            console.error('[HJI Manager] UI render error:', e);
+            const body = overlay?.querySelector('.hji-body');
+            if (body) body.innerHTML = `<div class="hji-help"><strong>HJI UI error</strong><p>${esc(e?.message || e)}</p><p>Close and reopen the manager. If this repeats, copy the browser console error.</p></div>`;
+        }
     }
 
     function renderTabs() {
@@ -200,8 +369,14 @@
     }
 
     function renderTab() {
-        const body = overlay.querySelector('.hji-body');
-        ({dashboard:renderDashboard,customers:renderCustomers,policies:renderPolicies,payments:renderPayments,claims:renderClaims,tiers:renderTiers,settings:renderSettings}[currentTab] || renderDashboard)(body);
+        const body = overlay?.querySelector('.hji-body');
+        if (!body) return;
+        try {
+            ({dashboard:renderDashboard,customers:renderCustomers,policies:renderPolicies,payments:renderPayments,claims:renderClaims,tiers:renderTiers,settings:renderSettings}[currentTab] || renderDashboard)(body);
+        } catch (e) {
+            console.error('[HJI Manager] Tab render error:', e);
+            body.innerHTML = `<div class="hji-help"><strong>Could not render this section</strong><p>${esc(e?.message || e)}</p><p>Try another tab or close/reopen the Manager.</p></div>`;
+        }
     }
 
     function renderDashboard(body) {
@@ -258,11 +433,13 @@
 
     function renderPolicies(body) {
         body.innerHTML = `<div class="hji-toolbar"><button class="hji-btn good" id="hji-add-policy">+ Add policy</button></div>
-        <table class="hji-table"><thead><tr><th>Customer</th><th>Tier</th><th>Started</th><th>Ends / Use</th><th>Status</th><th></th></tr></thead><tbody>
-        ${state.policies.map(p=>{const c=getCustomer(p.customerId),t=getTier(p.tierId),st=policyStatus(p); return `<tr><td>${esc(c?.name||'Unknown')}</td><td>${esc(t?.name||p.tierName||'Unknown')}</td><td>${dateOnly(p.startDate)}</td><td>${p.type==='single'?(p.used?'Used':'Not used'):dateOnly(p.endDate)}</td><td class="hji-status ${st[1]}">${st[0]}</td><td><button class="hji-btn" data-edit-policy="${p.id}">Edit</button></td></tr>`}).join('') || '<tr><td colspan="6">No policies yet.</td></tr>'}
-        </tbody></table>`;
+        <div class="hji-help"><strong>Client linking</strong><p>After creating a policy, use <b>Client setup</b> to generate a code for that insured player. The same HJI Client can hold policies from different insurers.</p></div>
+        <div class="hji-table-wrap"><table class="hji-table"><thead><tr><th>Customer</th><th>Tier</th><th>Started</th><th>Ends / Use</th><th>Status</th><th></th></tr></thead><tbody>
+        ${state.policies.map(p=>{const c=getCustomer(p.customerId),t=getTier(p.tierId),st=policyStatus(p); return `<tr><td>${esc(c?.name||'Unknown')}</td><td>${esc(t?.name||p.tierName||'Unknown')}</td><td>${dateOnly(p.startDate)}</td><td>${p.type==='single'?(p.used?'Used':'Not used'):dateOnly(p.endDate)}</td><td class="hji-status ${st[1]}">${st[0]}</td><td><div class="hji-toolbar" style="margin:0"><button class="hji-btn" data-setup-policy="${p.id}">Client setup</button><button class="hji-btn" data-edit-policy="${p.id}">Edit</button></div></td></tr>`}).join('') || '<tr><td colspan="6">No policies yet.</td></tr>'}
+        </tbody></table></div>`;
         body.querySelector('#hji-add-policy').onclick=()=>policyModal();
         body.querySelectorAll('[data-edit-policy]').forEach(b=>b.onclick=()=>policyModal(getPolicy(b.dataset.editPolicy)));
+        body.querySelectorAll('[data-setup-policy]').forEach(b=>b.onclick=()=>setupCodeModal(getPolicy(b.dataset.setupPolicy)));
     }
 
     function policyModal(existing=null) {
@@ -371,19 +548,135 @@
     }
 
     function renderSettings(body){
-        body.innerHTML=`<div class="hji-form">
-          <label>Provider Torn name<input id="set-name" value="${esc(state.settings.providerName||'')}"></label>
-          <label>Provider Torn ID<input id="set-id" inputmode="numeric" value="${esc(state.settings.providerId||'')}"></label>
-          <label class="wide">Torn API key <span class="hji-muted">Used only to read the provider's own Torn mail for claim imports.</span><input id="set-key" type="password" value="${esc(state.settings.apiKey||'')}"></label>
-          <label>Due soon warning (days)<input id="set-due" inputmode="numeric" value="${esc(state.settings.dueSoonDays||3)}"></label>
-          <label>Claim scan interval hint (minutes)<input id="set-poll" inputmode="numeric" value="${esc(state.settings.claimPollMinutes||10)}"></label>
+        const customKeyUrl = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Happy%20Jump%20Insurance%20Manager&user=messages,newmessages';
+        body.innerHTML=`
+        <div class="hji-help">
+          <strong>Settings help</strong>
+          <p>This page identifies you as the insurer and stores the Torn API key used for claim-mail scanning.</p>
+          <details><summary>Why does the Manager need an API key?</summary><p>The provider script reads your Torn Mail through Torn's official API so it can recognise HJI claim messages. It does not need your password and it does not send mail through the API.</p></details>
+          <details><summary>Where is the API key stored?</summary><p>It is stored locally by this userscript on the current browser/device. Client setup codes never include it, and HJI backup exports deliberately leave it blank.</p></details>
+          <details><summary>What does “Client setup” do?</summary><p>It creates a portable code containing the insurer, insured Torn ID and policy snapshot. The insured player imports that code in their HJI Client.</p></details>
         </div>
-        <div class="hji-toolbar" style="margin-top:12px"><button class="hji-btn good" id="set-save">Save settings</button><button class="hji-btn" id="set-keydocs">Open Torn custom key builder</button><button class="hji-btn" id="set-export">Export backup</button><button class="hji-btn" id="set-import">Import backup</button></div>
-        <p class="hji-muted">The manager's database is stored locally in the script/browser. Export backups regularly. API keys are never placed in claim messages.</p>`;
-        body.querySelector('#set-save').onclick=()=>{Object.assign(state.settings,{providerName:body.querySelector('#set-name').value.trim(),providerId:body.querySelector('#set-id').value.trim(),apiKey:body.querySelector('#set-key').value.trim(),dueSoonDays:Number(body.querySelector('#set-due').value||3),claimPollMinutes:Number(body.querySelector('#set-poll').value||10)});saveAll();alert('Saved.');};
-        body.querySelector('#set-keydocs').onclick=()=>window.open('https://www.torn.com/preferences.php#tab=api?step=addNewKey&user=messages&title=Happy%20Jump%20Insurance%20Manager','_blank');
-        body.querySelector('#set-export').onclick=()=>{const blob=new Blob([JSON.stringify({version:VERSION,exportedAt:nowISO(),state},null,2)],{type:'application/json'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`torn-hji-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);};
-        body.querySelector('#set-import').onclick=()=>{const inp=document.createElement('input');inp.type='file';inp.accept='.json,application/json';inp.onchange=()=>{const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{try{const obj=JSON.parse(r.result);if(!obj.state)throw new Error('Missing state');if(!confirm('Replace current local HJI manager data with this backup?'))return;state=obj.state;saveAll();renderTabs();renderTab();alert('Backup imported.');}catch(e){alert('Import failed: '+e.message)}};r.readAsText(f)};inp.click();};
+
+        <div class="hji-card">
+          <strong>Provider identity <span class="hji-info" title="These details are put into client setup codes so claims know which insurer to contact.">i</span></strong>
+          <div class="hji-form" style="margin-top:10px">
+            <label title="Your current Torn display name.">Provider Torn name<input id="set-name" value="${esc(state.settings.providerName||'')}"></label>
+            <label title="Your permanent numeric Torn user ID.">Provider Torn ID<input id="set-id" inputmode="numeric" value="${esc(state.settings.providerId||'')}"></label>
+          </div>
+        </div>
+
+        <div class="hji-card">
+          <strong>Torn API <span class="hji-info" title="Used only for reading claim mail with the official Torn API.">i</span></strong>
+          <p class="hji-muted">The generated custom key requests only <b>user → messages</b> and <b>user → newmessages</b>.</p>
+          <div class="hji-form">
+            <label class="wide">Stored API key
+              <div style="display:flex;gap:7px">
+                <input id="set-key" type="password" autocomplete="off" value="${esc(state.settings.apiKey||'')}" placeholder="Paste your HJI custom API key">
+                <button type="button" class="hji-btn" id="set-toggle-key">Show</button>
+              </div>
+            </label>
+          </div>
+          <div class="hji-toolbar" style="margin-top:10px">
+            <button class="hji-btn good" id="set-keydocs">Generate HJI custom key</button>
+            <button class="hji-btn" id="set-copy-keyurl">Copy key-builder link</button>
+            <button class="hji-btn" id="set-test-key">Test key</button>
+          </div>
+          <div class="hji-help">
+            <strong>API-key disclosure</strong>
+            <p>The key is sent only to Torn's official API when this Manager scans your messages. It is not sent to another HJI user, included in setup codes, or included in exported backups.</p>
+          </div>
+        </div>
+
+        <div class="hji-card">
+          <strong>Manager options <span class="hji-info" title="These values affect reminders and the suggested scan cadence only.">i</span></strong>
+          <div class="hji-form" style="margin-top:10px">
+            <label title="Policies ending within this many days show as Due soon.">Due soon warning (days)<input id="set-due" inputmode="numeric" value="${esc(state.settings.dueSoonDays||3)}"></label>
+            <label title="A reminder value for how often you intend to check claims. It does not silently scan Torn in the background.">Claim scan interval hint (minutes)<input id="set-poll" inputmode="numeric" value="${esc(state.settings.claimPollMinutes||10)}"></label>
+          </div>
+        </div>
+
+        <div class="hji-toolbar">
+          <button class="hji-btn good" id="set-save">Save settings</button>
+          <button class="hji-btn" id="set-export">Export backup</button>
+          <button class="hji-btn" id="set-import">Import backup</button>
+        </div>`;
+
+        const keyInput = body.querySelector('#set-key');
+
+        body.querySelector('#set-toggle-key').onclick=()=>{
+            const showing = keyInput.type === 'text';
+            keyInput.type = showing ? 'password' : 'text';
+            body.querySelector('#set-toggle-key').textContent = showing ? 'Show' : 'Hide';
+        };
+
+        body.querySelector('#set-save').onclick=()=>{
+            Object.assign(state.settings,{
+                providerName:body.querySelector('#set-name').value.trim(),
+                providerId:body.querySelector('#set-id').value.trim(),
+                apiKey:keyInput.value.trim(),
+                dueSoonDays:Number(body.querySelector('#set-due').value||3),
+                claimPollMinutes:Number(body.querySelector('#set-poll').value||10)
+            });
+            saveAll();
+            alert('Settings saved locally.');
+        };
+
+        body.querySelector('#set-keydocs').onclick=()=>{
+            // Using a real anchor avoids Torn/PDA treating window.open() as an internal SPA/user route.
+            const a=document.createElement('a');
+            a.href=customKeyUrl;
+            a.target='_blank';
+            a.rel='noopener noreferrer';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        };
+
+        body.querySelector('#set-copy-keyurl').onclick=async()=>{
+            await copyText(customKeyUrl);
+            alert('Custom-key builder link copied.');
+        };
+
+        body.querySelector('#set-test-key').onclick=async()=>{
+            const key = keyInput.value.trim();
+            if (!key) return alert('Paste your HJI custom API key first.');
+            const btn = body.querySelector('#set-test-key');
+            btn.disabled = true; btn.textContent = 'Testing…';
+            try {
+                let data;
+                try { data = await requestApi(`${API_BASE}/user/newmessages?limit=1`, key); }
+                catch { data = await requestApi(`${API_BASE}/user/messages?limit=1`, key); }
+                if (data?.error) throw new Error(data.error.error || data.error.message || JSON.stringify(data.error));
+                alert('The API key worked for the HJI message check.');
+            } catch(e) {
+                alert(`API key test failed.\n\n${e.message}\n\nUse the HJI custom-key button and allow messages/newmessages.`);
+            } finally {
+                btn.disabled = false; btn.textContent = 'Test key';
+            }
+        };
+
+        body.querySelector('#set-export').onclick=()=>{
+            const safeState=JSON.parse(JSON.stringify(state));
+            if(safeState.settings)safeState.settings.apiKey='';
+            const blob=new Blob([JSON.stringify({version:VERSION,exportedAt:nowISO(),state:safeState},null,2)],{type:'application/json'});
+            const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`torn-hji-backup-${new Date().toISOString().slice(0,10)}.json`;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+        };
+
+        body.querySelector('#set-import').onclick=()=>{
+            const inp=document.createElement('input');inp.type='file';inp.accept='.json,application/json';
+            inp.onchange=()=>{const f=inp.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{
+                try{
+                    const obj=JSON.parse(r.result);if(!obj.state)throw new Error('Missing state');
+                    if(!confirm('Replace current local HJI manager data with this backup?'))return;
+                    const existingKey=state.settings?.apiKey||'';
+                    state=obj.state;
+                    state.settings=state.settings||{};
+                    if(!state.settings.apiKey)state.settings.apiKey=existingKey;
+                    saveAll();renderTabs();renderTab();alert('Backup imported.');
+                }catch(e){alert('Import failed: '+e.message)}
+            };r.readAsText(f)};inp.click();
+        };
     }
 
     function createModal(title){
@@ -477,7 +770,12 @@
     function addLauncher(){
         injectStyles();
         if(document.getElementById('hji-launcher'))return;
-        const b=document.createElement('button');b.id='hji-launcher';b.textContent='🛡 HJI Manager';b.onclick=()=>openApp();document.body.appendChild(b);
+        const b=document.createElement('button');
+        b.id='hji-launcher';
+        b.textContent='🛡 HJI Manager';
+        document.body.appendChild(b);
+        makeDraggable(b, b, 'launcherPos', ()=>openApp());
+        b.title='Tap to open. Drag to move.';
     }
 
     function boot(){ addLauncher(); }
