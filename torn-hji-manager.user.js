@@ -11,8 +11,8 @@
 // @grant        GM_setValue
 // @connect      api.torn.com
 // @run-at       document-idle
-// @downloadURL  https://raw.githubusercontent.com/YOUR_GITHUB/YOUR_REPO/main/torn-hji-manager.user.js
-// @updateURL    https://raw.githubusercontent.com/YOUR_GITHUB/YOUR_REPO/main/torn-hji-manager.user.js
+// @downloadURL  https://raw.githubusercontent.com/DooBiiE/Torn-Happy-Jump-Insurance/main/torn-hji-manager.user.js
+// @updateURL    https://raw.githubusercontent.com/DooBiiE/Torn-Happy-Jump-Insurance/main/torn-hji-manager.user.js
 // ==/UserScript==
 
 (() => {
