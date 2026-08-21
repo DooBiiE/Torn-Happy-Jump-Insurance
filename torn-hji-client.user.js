@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Client
 // @namespace    torn-hji
-// @version      0.3.1
+// @version      0.3.2
 // @description  Insured-user client for importing Happy Jump policies and preparing structured Torn Mail claims.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -16,16 +16,92 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.3.1';
+    const VERSION = '0.3.2';
     const PREFIX='torn_hji_client_v2_';
     const LEGACY_PREFIX='torn_hji_client_v1_';
     const CLAIM_PREFIX='[HJI CLAIM]';
 
-    const storage={
-        get(k,f){const key=PREFIX+k;try{if(typeof GM_getValue==='function'){const v=GM_getValue(key,undefined);if(v!==undefined)return v}}catch{}try{const r=localStorage.getItem(key);return r==null?f:JSON.parse(r)}catch{return f}},
-        set(k,v){const key=PREFIX+k;try{if(typeof GM_setValue==='function')GM_setValue(key,v)}catch{}try{localStorage.setItem(key,JSON.stringify(v))}catch{}},
-        legacyGet(k,f){const key=LEGACY_PREFIX+k;try{if(typeof GM_getValue==='function'){const v=GM_getValue(key,undefined);if(v!==undefined)return v}}catch{}try{const r=localStorage.getItem(key);return r==null?f:JSON.parse(r)}catch{return f}}
+    function decodeStoredValue(value, fallback) {
+        if (value === undefined || value === null || value === '') return fallback;
+
+        let out = value;
+
+        // Torn PDA may return a stored array/object as JSON text.
+        for (let i = 0; i < 3 && typeof out === 'string'; i++) {
+            const s = out.trim();
+            if (!s) return fallback;
+            if (!['{', '[', '"'].includes(s[0])) break;
+            try { out = JSON.parse(s); } catch { break; }
+        }
+
+        // Be tolerant of wrappers that return { value: ... }.
+        if (out && typeof out === 'object' && !Array.isArray(out) &&
+            Object.keys(out).length === 1 &&
+            Object.prototype.hasOwnProperty.call(out, 'value')) {
+            return decodeStoredValue(out.value, fallback);
+        }
+
+        return out;
+    }
+
+    const storage = {
+        get(key, fallback) {
+            const full = PREFIX + key;
+
+            try {
+                if (typeof GM_getValue === 'function') {
+                    const v = GM_getValue(full, undefined);
+                    if (v !== undefined && !(v && typeof v.then === 'function')) {
+                        return decodeStoredValue(v, fallback);
+                    }
+                }
+            } catch (e) {
+                console.warn(`[HJI] GM_getValue failed for ${key}; using localStorage.`, e);
+            }
+
+            try {
+                const raw = localStorage.getItem(full);
+                return raw == null ? fallback : decodeStoredValue(raw, fallback);
+            } catch (e) {
+                console.warn(`[HJI] localStorage read failed for ${key}.`, e);
+                return fallback;
+            }
+        },
+
+        set(key, value) {
+            const full = PREFIX + key;
+
+            // Always store JSON text. This is consistent between Tampermonkey and Torn PDA.
+            const encoded = JSON.stringify(value);
+
+            try {
+                if (typeof GM_setValue === 'function') GM_setValue(full, encoded);
+            } catch (e) {
+                console.warn(`[HJI] GM_setValue failed for ${key}; localStorage still used.`, e);
+            }
+
+            try { localStorage.setItem(full, encoded); }
+            catch (e) { console.warn(`[HJI] localStorage write failed for ${key}.`, e); }
+        }
     };
+
+    function legacyGet(key, fallback) {
+        const full = LEGACY_PREFIX + key;
+        try {
+            if (typeof GM_getValue === 'function') {
+                const v = GM_getValue(full, undefined);
+                if (v !== undefined && !(v && typeof v.then === 'function')) {
+                    return decodeStoredValue(v, fallback);
+                }
+            }
+        } catch {}
+        try {
+            const raw = localStorage.getItem(full);
+            return raw == null ? fallback : decodeStoredValue(raw, fallback);
+        } catch {
+            return fallback;
+        }
+    }
 
     const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const claimRef=()=>`HJI-${new Date().toISOString().slice(0,10).replaceAll('-','')}-${Math.random().toString(36).slice(2,7).toUpperCase()}`;
@@ -177,7 +253,7 @@
     let state=storage.get('state',null);
     if(!state){
         state={claimantId:'',claimantName:'',policies:[],claims:[]};
-        const legacy=storage.legacyGet('state',null);
+        const legacy=legacyGet('state',null);
         if(legacy){
             state.claimantId=legacy.claimantId||'';
             state.claimantName=legacy.claimantName||'';
@@ -201,8 +277,15 @@
             }
         }
     }
-    state.policies=Array.isArray(state.policies)?state.policies:[];
-    state.claims=Array.isArray(state.claims)?state.claims:[];
+    state = decodeStoredValue(state, {}) || {};
+    state.claimantId = String(state.claimantId || '');
+    state.claimantName = String(state.claimantName || '');
+
+    const storedPolicies = decodeStoredValue(state.policies, []);
+    const storedClaims = decodeStoredValue(state.claims, []);
+
+    state.policies = Array.isArray(storedPolicies) ? storedPolicies : [];
+    state.claims = Array.isArray(storedClaims) ? storedClaims : [];
     const save=()=>storage.set('state',state);
 
     function styles(){
@@ -420,7 +503,29 @@
         b.title='Tap to open. Drag to move.';
     }
 
-    function boot(){launcher();tryFillPendingMail();}
-    if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
-    new MutationObserver(()=>{if(document.body&&!document.getElementById('hji-client-launch')&&!overlay)launcher();if(location.href.includes('messages.php'))tryFillPendingMail();}).observe(document.documentElement,{childList:true,subtree:true});
+    function boot(){
+        if (!document.body) return;
+        launcher();
+        tryFillPendingMail();
+    }
+
+    function startObserver(){
+        const target = document.documentElement || document.body;
+        if (!target || typeof target.nodeType !== 'number') {
+            setTimeout(startObserver, 250);
+            return;
+        }
+        const observer = new MutationObserver(()=>{
+            if(document.body && !document.getElementById('hji-client-launch') && !overlay) launcher();
+            if(location.href.includes('messages.php')) tryFillPendingMail();
+        });
+        observer.observe(target,{childList:true,subtree:true});
+    }
+
+    if(document.readyState==='loading') {
+        document.addEventListener('DOMContentLoaded',()=>{ boot(); startObserver(); },{once:true});
+    } else {
+        boot();
+        startObserver();
+    }
 })();

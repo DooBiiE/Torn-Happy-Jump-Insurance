@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.3.1
+// @version      0.3.2
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,31 +19,93 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.3.1';
+    const VERSION = '0.3.2';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const API_BASE = 'https://api.torn.com/v2';
 
+    function decodeStoredValue(value, fallback) {
+        if (value === undefined || value === null || value === '') return fallback;
+
+        // Torn PDA/userscript engines may return JSON values as strings rather than
+        // preserving the original array/object type. Decode up to two layers.
+        let out = value;
+        for (let i = 0; i < 2 && typeof out === 'string'; i++) {
+            const s = out.trim();
+            if (!s || (!s.startsWith('{') && !s.startsWith('[') && !s.startsWith('"'))) break;
+            try { out = JSON.parse(s); } catch { break; }
+        }
+
+        // Some wrappers expose the actual stored value inside a `value` property.
+        if (out && typeof out === 'object' && !Array.isArray(out) &&
+            Object.keys(out).length === 1 && Object.prototype.hasOwnProperty.call(out, 'value')) {
+            return decodeStoredValue(out.value, fallback);
+        }
+
+        return out;
+    }
+
+    function decodeStoredValue(value, fallback) {
+        if (value === undefined || value === null || value === '') return fallback;
+
+        let out = value;
+
+        // Torn PDA may return a stored array/object as JSON text.
+        for (let i = 0; i < 3 && typeof out === 'string'; i++) {
+            const s = out.trim();
+            if (!s) return fallback;
+            if (!['{', '[', '"'].includes(s[0])) break;
+            try { out = JSON.parse(s); } catch { break; }
+        }
+
+        // Be tolerant of wrappers that return { value: ... }.
+        if (out && typeof out === 'object' && !Array.isArray(out) &&
+            Object.keys(out).length === 1 &&
+            Object.prototype.hasOwnProperty.call(out, 'value')) {
+            return decodeStoredValue(out.value, fallback);
+        }
+
+        return out;
+    }
+
     const storage = {
         get(key, fallback) {
             const full = PREFIX + key;
+
             try {
                 if (typeof GM_getValue === 'function') {
                     const v = GM_getValue(full, undefined);
-                    if (v !== undefined) return v;
+                    if (v !== undefined && !(v && typeof v.then === 'function')) {
+                        return decodeStoredValue(v, fallback);
+                    }
                 }
-            } catch {}
+            } catch (e) {
+                console.warn(`[HJI] GM_getValue failed for ${key}; using localStorage.`, e);
+            }
+
             try {
                 const raw = localStorage.getItem(full);
-                return raw == null ? fallback : JSON.parse(raw);
-            } catch {
+                return raw == null ? fallback : decodeStoredValue(raw, fallback);
+            } catch (e) {
+                console.warn(`[HJI] localStorage read failed for ${key}.`, e);
                 return fallback;
             }
         },
+
         set(key, value) {
             const full = PREFIX + key;
-            try { if (typeof GM_setValue === 'function') GM_setValue(full, value); } catch {}
-            try { localStorage.setItem(full, JSON.stringify(value)); } catch {}
+
+            // Always store JSON text. This is consistent between Tampermonkey and Torn PDA.
+            const encoded = JSON.stringify(value);
+
+            try {
+                if (typeof GM_setValue === 'function') GM_setValue(full, encoded);
+            } catch (e) {
+                console.warn(`[HJI] GM_setValue failed for ${key}; localStorage still used.`, e);
+            }
+
+            try { localStorage.setItem(full, encoded); }
+            catch (e) { console.warn(`[HJI] localStorage write failed for ${key}.`, e); }
         }
     };
 
@@ -323,23 +385,128 @@
         }
     ];
 
-    let state = {
-        tiers: storage.get('tiers', null) || defaultTiers,
-        customers: storage.get('customers', []),
-        policies: storage.get('policies', []),
-        payments: storage.get('payments', []),
-        claims: storage.get('claims', []),
-        settings: storage.get('settings', {
+    function normalizeCollection(value, name) {
+        const decoded = decodeStoredValue(value, []);
+
+        if (Array.isArray(decoded)) return decoded;
+
+        // Recover an object containing numeric/indexed records rather than crashing.
+        if (decoded && typeof decoded === 'object') {
+            const values = Object.values(decoded);
+            if (values.length && values.every(v => v && typeof v === 'object')) {
+                console.warn(`[HJI Manager] Recovered ${name} from object storage format.`);
+                return values;
+            }
+        }
+
+        if (decoded !== undefined && decoded !== null && decoded !== '') {
+            console.warn(`[HJI Manager] Invalid ${name} storage value ignored:`, decoded);
+        }
+        return [];
+    }
+
+    function normalizeSettings(value) {
+        const defaults = {
             providerId: '',
             providerName: '',
             apiKey: '',
             dueSoonDays: 3,
             claimPollMinutes: 10,
             lastMailScan: null
-        })
+        };
+        const decoded = decodeStoredValue(value, {});
+        return decoded && typeof decoded === 'object' && !Array.isArray(decoded)
+            ? { ...defaults, ...decoded }
+            : defaults;
+    }
+
+    function normalizeCollection(value, name) {
+        const decoded = decodeStoredValue(value, []);
+
+        if (Array.isArray(decoded)) return decoded;
+
+        // Some PDA storage layers turn arrays into {0:{...},1:{...}} objects.
+        if (decoded && typeof decoded === 'object') {
+            const entries = Object.entries(decoded);
+            if (entries.length && entries.every(([k]) => /^\d+$/.test(k))) {
+                console.warn(`[HJI Manager] Recovered ${name} from indexed-object storage.`);
+                return entries
+                    .sort((a,b) => Number(a[0]) - Number(b[0]))
+                    .map(([,v]) => v);
+            }
+        }
+
+        if (decoded !== undefined && decoded !== null && decoded !== '') {
+            console.warn(`[HJI Manager] Invalid ${name} value was reset safely.`, decoded);
+        }
+        return [];
+    }
+
+    function normalizeSettings(value) {
+        const defaults = {
+            providerId: '',
+            providerName: '',
+            apiKey: '',
+            dueSoonDays: 3,
+            claimPollMinutes: 10,
+            lastMailScan: null
+        };
+        const decoded = decodeStoredValue(value, {});
+        return decoded && typeof decoded === 'object' && !Array.isArray(decoded)
+            ? { ...defaults, ...decoded }
+            : defaults;
+    }
+
+    let state = {
+        tiers: normalizeCollection(storage.get('tiers', defaultTiers), 'tiers'),
+        customers: normalizeCollection(storage.get('customers', []), 'customers'),
+        policies: normalizeCollection(storage.get('policies', []), 'policies'),
+        payments: normalizeCollection(storage.get('payments', []), 'payments'),
+        claims: normalizeCollection(storage.get('claims', []), 'claims'),
+        settings: normalizeSettings(storage.get('settings', {}))
     };
 
+    if (!state.tiers.length) state.tiers = defaultTiers;
+
+    // Rewrite startup state into the stable JSON-text format immediately.
+    try {
+        storage.set('tiers', state.tiers);
+        storage.set('customers', state.customers);
+        storage.set('policies', state.policies);
+        storage.set('payments', state.payments);
+        storage.set('claims', state.claims);
+        storage.set('settings', state.settings);
+    } catch (e) {
+        console.warn('[HJI Manager] Startup normalization could not be persisted.', e);
+    }
+
+    // A truly empty/invalid tier store should still receive the built-in starter tiers.
+    if (!state.tiers.length) state.tiers = defaultTiers;
+
+    // Persist the normalized representation immediately so a PDA-specific storage
+    // shape cannot break the next page load.
+    function persistNormalizedState() {
+        try {
+            storage.set('tiers', state.tiers);
+            storage.set('customers', state.customers);
+            storage.set('policies', state.policies);
+            storage.set('payments', state.payments);
+            storage.set('claims', state.claims);
+            storage.set('settings', state.settings);
+        } catch (e) {
+            console.warn('[HJI Manager] Could not persist normalized startup state.', e);
+        }
+    }
+    persistNormalizedState();
+
     function saveAll() {
+        state.tiers = normalizeCollection(state.tiers, 'tiers');
+        state.customers = normalizeCollection(state.customers, 'customers');
+        state.policies = normalizeCollection(state.policies, 'policies');
+        state.payments = normalizeCollection(state.payments, 'payments');
+        state.claims = normalizeCollection(state.claims, 'claims');
+        state.settings = normalizeSettings(state.settings);
+
         storage.set('tiers', state.tiers);
         storage.set('customers', state.customers);
         storage.set('policies', state.policies);
@@ -438,7 +605,7 @@
             ['payments','Payments'],['claims','Claims'],['tiers','Tiers'],['settings','Settings']
         ];
         const el = overlay.querySelector('.hji-tabs');
-        el.innerHTML = tabs.map(([id,label]) => `<button class="hji-tab ${id===currentTab?'active':''}" data-tab="${id}">${label}${id==='claims' ? ` (${state.claims.filter(c=>c.status==='submitted').length})` : ''}</button>`).join('');
+        el.innerHTML = tabs.map(([id,label]) => `<button class="hji-tab ${id===currentTab?'active':''}" data-tab="${id}">${label}${id==='claims' ? ` (${normalizeCollection(state.claims, 'claims').filter(c=>c?.status==='submitted').length})` : ''}</button>`).join('');
         el.querySelectorAll('[data-tab]').forEach(b => b.onclick = () => { currentTab=b.dataset.tab; renderTabs(); renderTab(); });
     }
 
@@ -458,7 +625,7 @@
         const active = statuses.filter(x=>x==='Active').length;
         const due = statuses.filter(x=>x==='Due soon').length;
         const expired = statuses.filter(x=>x==='Expired').length;
-        const pendingClaims = state.claims.filter(c=>c.status==='submitted').length;
+        const pendingClaims = normalizeCollection(state.claims, 'claims').filter(c=>c?.status==='submitted').length;
         const monthAgo = Date.now()-30*86400000;
         const revenue = state.payments.filter(p=>new Date(p.date).getTime()>=monthAgo && p.method==='cash').reduce((s,p)=>s+Number(p.amount||0),0);
         body.innerHTML = `
@@ -852,7 +1019,27 @@
         b.title='Tap to open. Drag to move.';
     }
 
-    function boot(){ addLauncher(); }
-    if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',boot,{once:true});else boot();
-    new MutationObserver(()=>{if(document.body&&!document.getElementById('hji-launcher')&&!overlay)addLauncher();}).observe(document.documentElement,{childList:true,subtree:true});
+    function boot(){
+        if (!document.body) return;
+        addLauncher();
+    }
+
+    function startObserver(){
+        const target = document.documentElement || document.body;
+        if (!target || typeof target.nodeType !== 'number') {
+            setTimeout(startObserver, 250);
+            return;
+        }
+        const observer = new MutationObserver(()=>{
+            if(document.body && !document.getElementById('hji-launcher') && !overlay) addLauncher();
+        });
+        observer.observe(target,{childList:true,subtree:true});
+    }
+
+    if(document.readyState==='loading') {
+        document.addEventListener('DOMContentLoaded',()=>{ boot(); startObserver(); },{once:true});
+    } else {
+        boot();
+        startObserver();
+    }
 })();
