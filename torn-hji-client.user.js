@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Client
 // @namespace    torn-hji
-// @version      0.3.8
+// @version      0.3.9
 // @description  Insured-user client for importing Happy Jump policies and preparing structured Torn Mail claims.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -18,7 +18,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.3.8';
+    const VERSION = '0.3.9';
     const PREFIX='torn_hji_client_v2_';
     const LEGACY_PREFIX='torn_hji_client_v1_';
     const CLAIM_PREFIX='[HJI CLAIM]';
@@ -372,6 +372,19 @@
         };
     }
 
+    function applyPaidClaimToClientPolicy(claim) {
+        if (!claim || clientClaimStatus(claim) !== 'paid' || !claim.policyId) return false;
+
+        const policy = state.policies.find(p => String(p.policyId) === String(claim.policyId));
+        if (!policy || policy.type !== 'single') return false;
+
+        policy.status = 'paid_out';
+        policy.used = true;
+        policy.paidOutAt = policy.paidOutAt || new Date().toISOString();
+        policy.payoutClaimReference = claim.reference || '';
+        return true;
+    }
+
     async function syncClaimStatuses(){
         const key=String(state.settings.statusApiKey||'').trim();
         if(!key) return alert('Add the optional Claim Status Sync API key in Client Settings first.');
@@ -400,7 +413,13 @@
                     claim.status=update.status;
                     claim.statusUpdatedAt=update.timestamp ? new Date(update.timestamp*1000).toISOString() : new Date().toISOString();
                     claim.statusSenderName=update.senderName||claim.providerName||'';
+
+                    applyPaidClaimToClientPolicy(claim);
                     changed++;
+                } else if (update.status === 'paid') {
+                    // Repair/complete the linked policy state even if the claim was
+                    // already marked paid on a previous sync.
+                    applyPaidClaimToClientPolicy(claim);
                 }
             }
 
@@ -439,6 +458,7 @@
 
     function policyStatus(p){
         if (p.status === 'cancelled') return ['Cancelled','hc-policy-cancelled','hc-status-muted'];
+        if (p.status === 'paid_out' || p.paidOutAt || p.payoutClaimReference) return ['Paid out','hc-policy-used','hc-status-muted'];
         if (p.type === 'single') {
             if (p.used) return ['Used','hc-policy-used','hc-status-muted'];
             return ['Active','hc-policy-active','hc-status-active'];
@@ -591,7 +611,7 @@
         return `
           <div class="hc-help">
             <strong>My claims</strong>
-            <p>Claims start as <b>Prepared</b>. When your provider sends a structured HJI status mail, the optional status-sync feature can update the status here.</p><p>After a status has synced successfully, the Torn Mail can be deleted — the status is stored locally in this Client.</p>
+            <p>Claims start as <b>Prepared</b>. When your provider sends a structured HJI status mail, the optional status-sync feature can update the status here.</p><p>After a status has synced successfully, the Torn Mail can be deleted — the status is stored locally in this Client. If a single-jump claim reaches Paid, that linked policy is also marked Paid out.</p>
             <p><b>Last status sync:</b> ${esc(lastSync)}</p>
           </div>
 

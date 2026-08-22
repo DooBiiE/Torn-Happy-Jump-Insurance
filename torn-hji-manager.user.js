@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.4
+// @version      0.4.5
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.4';
+    const VERSION = '0.4.5';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -569,6 +569,7 @@
         if (label === 'Due soon') return 'hji-policy-row-due';
         if (label === 'Expired') return 'hji-policy-row-expired';
         if (label === 'Cancelled') return 'hji-policy-row-cancelled';
+        if (label === 'Paid out') return 'hji-policy-row-used';
         if (label === 'Used') return 'hji-policy-row-used';
         return '';
     }
@@ -781,7 +782,7 @@
         <div class="hji-toolbar"><button class="hji-btn good" id="hji-add-policy">+ Add policy</button></div>
         <div class="hji-help">
           <strong>Policy lifecycle</strong>
-          <p>Monthly/time-based cover stays as one policy. Use <b>Renew</b> to extend it and record the renewal payment.</p>
+          <p>Monthly/time-based cover stays as one policy. Use <b>Renew</b> to extend it and record the renewal payment. A single-jump policy automatically becomes <b>Paid out</b> when its linked claim is marked Paid.</p>
           <p><span class="hji-active">Green = active</span> · <span class="hji-due">Amber = due soon</span> · <span class="hji-expired">Red = expired</span> · Grey = cancelled/used.</p>
         </div>
         <div class="hji-table-wrap"><table class="hji-table"><thead><tr><th>Customer</th><th>Tier</th><th>Started</th><th>Ends / Use</th><th>Status</th><th></th></tr></thead><tbody>
@@ -1262,6 +1263,28 @@
         modal.addSave(()=>{state.claims.push({id:uid('claim'),reference:modal.el.querySelector('#cl-ref').value.trim(),claimantName:modal.el.querySelector('#cl-name').value.trim(),claimantId:modal.el.querySelector('#cl-id').value.trim(),tierName:modal.el.querySelector('#cl-tier').value.trim(),details:modal.el.querySelector('#cl-details').value.trim(),status:'submitted',submittedAt:nowISO(),source:'manual'});saveAll();modal.close();renderTab();renderTabs();});
     }
 
+    function applyClaimPayoutToPolicy(c) {
+        if (!c || c.status !== 'paid' || !c.policyId) return false;
+
+        const policy = getPolicy(c.policyId);
+        if (!policy) return false;
+
+        const tier = getTier(policy.tierId);
+        const policyType = policy.type || tier?.type || '';
+
+        // Monthly/time-based insurance survives individual payouts.
+        if (policyType !== 'single') return false;
+
+        policy.status = 'paid_out';
+        policy.used = true;
+        policy.paidOutAt = policy.paidOutAt || nowISO();
+        policy.payoutClaimId = c.id || policy.payoutClaimId || '';
+        policy.payoutClaimReference = c.reference || policy.payoutClaimReference || '';
+        policy.updatedAt = nowISO();
+
+        return true;
+    }
+
     function claimModal(c){
         const modal=createModal(`Claim ${c.reference}`);
 
@@ -1304,7 +1327,14 @@
             c.status=modal.el.querySelector('#cl-status').value;
             c.providerNote=modal.el.querySelector('#cl-note').value.trim();
             c.updatedAt=nowISO();
+
+            const policyWasPaidOut = applyClaimPayoutToPolicy(c);
+
             saveAll();
+
+            if (policyWasPaidOut) {
+                console.info(`[HJI Manager] Single-jump policy ${c.policyId} marked Paid out by claim ${c.reference}.`);
+            }
         };
 
         modal.addSave(()=>{
