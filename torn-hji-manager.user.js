@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.20
+// @version      0.4.21
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.20';
+    const VERSION = '0.4.21';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -29,7 +29,7 @@
     const ITEM_SCAN_FIRST_LOOKBACK_SECONDS = 3 * 24 * 60 * 60;
     const ITEM_SCAN_OVERLAP_SECONDS = 5 * 60;
     const ITEM_SCAN_PAGE_LIMIT = 100;
-    const ITEM_SCANNER_SCHEMA_VERSION = 4;
+    const ITEM_SCANNER_SCHEMA_VERSION = 5;
 
 
     function decodeStoredValue(value, fallback) {
@@ -1190,6 +1190,85 @@
         return receipt;
     }
 
+    function paymentForSourceLog(logId) {
+        const id=String(logId || '');
+        return state.payments.find(p => String(p?.sourceLogId || '') === id) || null;
+    }
+
+    function policyForPayment(payment) {
+        if (!payment?.policyId) return null;
+        return getPolicy(payment.policyId);
+    }
+
+    function customerForPayment(payment) {
+        if (!payment?.customerId) return null;
+        return getCustomer(payment.customerId);
+    }
+
+    function backfillLegacyProcessedScanRecords() {
+        const processedIds = Array.isArray(state.settings.processedItemLogIds)
+            ? state.settings.processedItemLogIds.map(String)
+            : [];
+
+        const auditIds = new Set(
+            (state.settings.processedItemScans || []).map(r => String(r?.logId || ''))
+        );
+
+        let created = 0;
+        let unresolved = 0;
+
+        for (const logId of processedIds) {
+            if (!logId || auditIds.has(logId)) continue;
+
+            const payment = paymentForSourceLog(logId);
+
+            if (payment) {
+                const policy = policyForPayment(payment);
+                const customer = customerForPayment(payment);
+
+                state.settings.processedItemScans.push({
+                    logId,
+                    timestamp: payment.date ? Math.floor(new Date(payment.date).getTime()/1000) : 0,
+                    senderId: String(customer?.tornId || ''),
+                    senderName: String(customer?.name || ''),
+                    itemId: String(payment.itemId || ''),
+                    itemName: String(payment.itemName || ''),
+                    quantity: Number(payment.itemQty || 0),
+                    transferMessage: '',
+                    action: 'created',
+                    tierId: String(policy?.tierId || ''),
+                    tierName: String(getTier(policy?.tierId)?.name || policy?.tierName || ''),
+                    customerId: String(payment.customerId || ''),
+                    policyId: String(payment.policyId || ''),
+                    paymentId: String(payment.id || ''),
+                    processedAt: payment.createdAt || nowISO(),
+                    reopened: false,
+                    migratedLegacy: true
+                });
+
+                auditIds.add(logId);
+                created++;
+            } else {
+                // Old scanner marked this ID processed, but there is no linked payment
+                // proving it was actually handled. Remove it from the skip list so the
+                // new scanner can offer it again during the recovery window.
+                state.settings.processedItemLogIds =
+                    state.settings.processedItemLogIds
+                        .map(String)
+                        .filter(id => id !== logId);
+
+                unresolved++;
+            }
+        }
+
+        state.settings.processedItemScans =
+            (state.settings.processedItemScans || []).slice(-500);
+
+        if (created || unresolved) saveAll();
+
+        return {created, unresolved};
+    }
+
     function processedScanRecord(logId) {
         return (state.settings.processedItemScans || [])
             .find(r => String(r.logId || '') === String(logId || ''));
@@ -1474,6 +1553,7 @@
     }
 
     function processedItemScanLogModal() {
+        const migration=backfillLegacyProcessedScanRecords();
         const modal=createModal('Processed Item Scan Log');
 
         const records=[...(state.settings.processedItemScans || [])]
@@ -1483,6 +1563,7 @@
           <div class="hji-help">
             <strong>Item scan history</strong>
             <p>This records item transfers you previously reviewed. If you accidentally ignored a valid payment, use <b>Reopen</b> to process it again.</p>
+            ${migration.created || migration.unresolved ? `<p><b>Legacy migration:</b> ${migration.created} old processed transfer${migration.created===1?'':'s'} restored to the audit log · ${migration.unresolved} unresolved transfer${migration.unresolved===1?'':'s'} reopened for scanning.</p>` : ''}
           </div>
 
           <div class="hji-table-wrap"><table class="hji-table">
@@ -1667,6 +1748,7 @@
             btn.textContent='Scanning item receipts…';
         }
 
+        const legacyMigration=backfillLegacyProcessedScanRecords();
         const windowInfo=itemScanWindow(forceLookbackDays);
 
         if(!activeTierPaymentItems().length){
@@ -1709,7 +1791,9 @@
                     `0 matching tier-payment candidates found\n\n` +
                     `Window: ${formatScanWindow(windowInfo.from, windowInfo.to)}
 ` +
-                    `Mode: ${windowInfo.reason}`
+                    `Mode: ${windowInfo.reason}
+` +
+                    `Legacy audit migration: ${legacyMigration.created} restored · ${legacyMigration.unresolved} reopened`
                 );
                 renderDashboard(overlay.querySelector('.hji-body'));
                 return;
@@ -1825,6 +1909,8 @@
     }
 
     function renderDashboard(body) {
+        backfillLegacyProcessedScanRecords();
+
         const activePolicies = state.policies.filter(p=>policyStatus(p)[0]==='Active').length;
         const dueSoon = state.policies.filter(p=>policyStatus(p)[0]==='Due soon').length;
         const openClaims = state.claims.filter(c=>!['rejected','closed','paid'].includes(c.status)).length;
