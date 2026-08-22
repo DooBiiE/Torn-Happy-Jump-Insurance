@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.21
+// @version      0.4.22
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.21';
+    const VERSION = '0.4.22';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -1451,6 +1451,10 @@
     }
 
     function itemReceiptModal(receipt, matches, onDone) {
+        if (receipt?.wasPreviouslyProcessed && !processedScanRecord(receipt.logId)) {
+            saveProcessedScanRecord(receipt, 'legacy_processed', {reopened:true});
+        }
+
         const modal=createModal('Incoming item payment detected');
 
         const existingCustomer = state.customers.find(c =>
@@ -1463,6 +1467,13 @@
             <p>HJI found an incoming item transfer that matches ${matches.length ? 'one or more configured tiers' : 'no tier exactly yet'}.</p>
             <p>Nothing will be created until you confirm it.</p>
           </div>
+
+          ${receipt.wasPreviouslyProcessed ? `
+          <div class="hji-help" style="background:#403823;border-color:#806f3d">
+            <strong>Previously processed log</strong>
+            <p>This Torn log ID was already marked processed by an earlier HJI scan${receipt.previousAudit?.action ? ` (${esc(receipt.previousAudit.action)})` : ''}.</p>
+            <p>Recovery mode is showing it again so you can correct an earlier mistake. HJI will not create anything unless you confirm.</p>
+          </div>` : ''}
 
           <div class="hji-card">
             <p><b>From:</b> ${esc(receipt.senderName || 'Unknown')} ${receipt.senderId ? `[${esc(receipt.senderId)}]` : ''}</p>
@@ -1575,7 +1586,12 @@
                   <td>${esc(r.senderName||'Unknown')} ${r.senderId?`[${esc(r.senderId)}]`:''}</td>
                   <td>${esc(r.quantity||0)}x ${esc(r.itemName||`Item ${r.itemId||''}`)}</td>
                   <td>${esc(r.transferMessage||'')}</td>
-                  <td>${esc(r.action||'')}</td>
+                  <td>${esc(({
+                        created:'Created policy',
+                        ignored:'Ignored',
+                        later:'Later',
+                        legacy_processed:'Legacy processed'
+                    })[r.action] || r.action || '')}</td>
                   <td>
                     ${r.action==='created'
                         ? `<span class="hji-muted">Created</span>`
@@ -1738,7 +1754,7 @@
         return `${from} → ${to}`;
     }
 
-    async function scanItemPayments(forceLookbackDays=0) {
+    async function scanItemPayments(forceLookbackDays=0, includeProcessed=false) {
         const key=String(state.settings.apiKey || '').trim();
         if(!key) return alert('Add the Manager API key in Settings first.');
 
@@ -1772,9 +1788,14 @@
             );
 
             const candidates=logs
-                .filter(log=>!processed.has(String(log?.id ?? '')))
+                .filter(log => includeProcessed || !processed.has(String(log?.id ?? '')))
                 .flatMap(parseIncomingItemLogs)
                 .filter(Boolean)
+                .map(receipt => ({
+                    ...receipt,
+                    wasPreviouslyProcessed: processed.has(String(receipt.logId || '')),
+                    previousAudit: processedScanRecord(receipt.logId) || null
+                }))
                 .sort((a,b)=>b.timestamp-a.timestamp);
 
             // Only advance the checkpoint after the entire Torn API window was
@@ -1792,6 +1813,8 @@
                     `Window: ${formatScanWindow(windowInfo.from, windowInfo.to)}
 ` +
                     `Mode: ${windowInfo.reason}
+` +
+                    `Processed logs included: ${includeProcessed ? 'Yes' : 'No'}
 ` +
                     `Legacy audit migration: ${legacyMigration.created} restored · ${legacyMigration.unresolved} reopened`
                 );
@@ -1935,7 +1958,7 @@
         body.innerHTML=`
           <div class="hji-toolbar">
             <button class="hji-btn good" id="hji-scan-items">↻ Scan item payments</button>
-            <button class="hji-btn" id="hji-rescan-items-3d">↺ Rescan last 3 days</button>
+            <button class="hji-btn" id="hji-rescan-items-3d">↺ Recovery rescan 3 days</button>
             <button class="hji-btn" id="hji-scan-log">Processed scan log (${(state.settings.processedItemScans||[]).length})</button>
           </div>
 
@@ -1943,7 +1966,7 @@
             <strong>Incoming item-payment scan</strong>
             <p>Checks Torn's <b>Item receive</b> log (4103) for direct item transfers that match your configured tier item ID/name and quantity. You confirm every match before HJI creates a customer, policy or payment.</p>
             <p>First scan looks back <b>3 days</b>. Later scans start from the <b>last successful check</b> with a 5-minute overlap, and HJI remembers processed log IDs to prevent duplicates.</p>
-            <p><b>Rescan last 3 days</b> is a recovery tool for older transfers that were missed by a previous scanner version. Already processed log IDs are still ignored, so it will not duplicate accepted payments.</p>
+            <p><b>Rescan last 3 days</b> is a recovery tool. It deliberately includes previously processed log IDs so older scanner mistakes can be reviewed again. Nothing is created unless you confirm the receipt.</p>
             <p><b>Watching for:</b> ${itemScanFilterSummaryHtml()}</p>
             <p class="hji-muted">Only incoming items configured on active tiers are considered possible insurance payments. Other incoming items are ignored.</p>
             <p><b>Last successful item scan:</b> ${esc(lastItemScan)}</p>
@@ -2022,8 +2045,13 @@
 
         body.querySelector('#hji-scan-items').onclick=()=>scanItemPayments();
         body.querySelector('#hji-rescan-items-3d').onclick=()=>{
-            if(!confirm('Rescan the last 3 days of Torn Item receive logs?\n\nAlready processed transfers will be ignored.')) return;
-            scanItemPayments(3);
+            if(!confirm(
+                'Recovery rescan: check the last 3 days of Torn Item receive logs?\n\n' +
+                'Previously processed transfers WILL be included for review.\n' +
+                'Nothing is created automatically, so this is safe to use when an older scan was wrong.'
+            )) return;
+
+            scanItemPayments(3, true);
         };
         body.querySelector('#hji-scan-log').onclick=processedItemScanLogModal;
     }
