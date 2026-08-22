@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.0
+// @version      0.4.1
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,9 +19,10 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.0';
+    const VERSION = '0.4.1';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
+    const STATUS_PREFIX = '[HJI STATUS]';
     const API_BASE = 'https://api.torn.com/v2';
 
     function decodeStoredValue(value, fallback) {
@@ -1008,15 +1009,207 @@
         });
     }
 
+
+    function openClaimMail(c) {
+        if (c?.mailMessageId) {
+            window.location.href = `https://www.torn.com/messages.php#/p=read&ID=${encodeURIComponent(c.mailMessageId)}&suffix=inbox`;
+            return;
+        }
+
+        alert('This claim does not have a Torn Mail message ID. Opening your inbox instead.');
+        window.location.href = 'https://www.torn.com/messages.php#/p=inbox';
+    }
+
+    function openClaimTrade(c) {
+        const id = String(c?.claimantId || '').trim();
+        if (!/^\d+$/.test(id)) return alert('This claim does not have a valid claimant Torn ID.');
+        window.location.href = `https://www.torn.com/trade.php#step=start&userID=${encodeURIComponent(id)}`;
+    }
+
+    function claimStatusLabel(status) {
+        return ({
+            submitted: 'Submitted',
+            reviewing: 'Reviewing',
+            approved: 'Approved',
+            rejected: 'Rejected',
+            paid: 'Paid',
+            closed: 'Closed'
+        })[status] || String(status || 'Submitted');
+    }
+
+    function buildClaimStatusMail(c, status, note='') {
+        const label = claimStatusLabel(status);
+        const subject = `${STATUS_PREFIX} ${c.reference} ${status.toUpperCase()}`;
+        const body = [
+            STATUS_PREFIX,
+            `Claim Reference: ${c.reference}`,
+            `Status: ${label}`,
+            `Claimant: ${c.claimantName || ''} [${c.claimantId || ''}]`,
+            `Provider: ${state.settings.providerName || ''} [${state.settings.providerId || ''}]`,
+            note ? `Provider Note: ${note}` : '',
+            '',
+            'You can sync this status in the Happy Jump Insurance Client.',
+            `HJI Manager v${VERSION}`
+        ].filter(Boolean).join('\n');
+
+        return {subject, body};
+    }
+
+    let managerMailFillInProgress = false;
+
+    function setManagerNativeValue(el, value) {
+        const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+        if (setter) setter.call(el, value);
+        else el.value = value;
+        el.dispatchEvent(new Event('input', {bubbles:true}));
+        el.dispatchEvent(new Event('change', {bubbles:true}));
+    }
+
+    function tryFillManagerStatusMail() {
+        const p = storage.get('pendingStatusMail', null);
+        if (!p || !location.href.includes('messages.php') || managerMailFillInProgress) return;
+
+        if (Date.now() - Number(p.createdAt || 0) > 10 * 60 * 1000) {
+            storage.set('pendingStatusMail', null);
+            return;
+        }
+
+        managerMailFillInProgress = true;
+        let tries = 0;
+
+        const timer = setInterval(() => {
+            tries++;
+
+            const inputs = [...document.querySelectorAll('input')];
+            const textareas = [...document.querySelectorAll('textarea')];
+
+            const subject = inputs.find(x =>
+                /subject/i.test(x.placeholder || '') ||
+                /subject/i.test(x.name || '') ||
+                /subject/i.test(x.getAttribute('aria-label') || '')
+            );
+
+            const body = textareas.find(x => x.offsetParent !== null) ||
+                         document.querySelector('[contenteditable="true"]');
+
+            let subjectReady = false;
+            let bodyReady = false;
+
+            if (subject) {
+                if (!subject.value) setManagerNativeValue(subject, p.subject);
+                subjectReady = String(subject.value || '').trim().length > 0;
+            }
+
+            if (body) {
+                if (body.tagName === 'TEXTAREA') {
+                    if (!body.value) setManagerNativeValue(body, p.body);
+                    bodyReady = String(body.value || '').trim().length > 0;
+                } else if (body.isContentEditable) {
+                    if (!body.textContent) {
+                        body.focus();
+                        try { document.execCommand('insertText', false, p.body); } catch {}
+                        body.dispatchEvent(new InputEvent('input', {
+                            bubbles:true,
+                            inputType:'insertText',
+                            data:p.body
+                        }));
+                    }
+                    bodyReady = String(body.textContent || '').trim().length > 0;
+                }
+            }
+
+            if (subjectReady && bodyReady) {
+                clearInterval(timer);
+                managerMailFillInProgress = false;
+                storage.set('pendingStatusMail', null);
+                return;
+            }
+
+            if (tries >= 20) {
+                clearInterval(timer);
+                managerMailFillInProgress = false;
+                storage.set('pendingStatusMail', null);
+                alert('Torn Mail was opened and the status update was copied to your clipboard. Paste it into the composer if Torn/PDA did not allow automatic filling.');
+            }
+        }, 500);
+    }
+
+    async function prepareClaimStatusMail(c, status=null, note=null) {
+        if (!c) return;
+
+        const chosenStatus = status || c.status || 'submitted';
+        const chosenNote = note ?? c.providerNote ?? '';
+        const mail = buildClaimStatusMail(c, chosenStatus, chosenNote);
+
+        await copyText(`${mail.subject}\n\n${mail.body}`);
+
+        storage.set('pendingStatusMail', {
+            claimantId: String(c.claimantId || ''),
+            subject: mail.subject,
+            body: mail.body,
+            createdAt: Date.now()
+        });
+
+        window.location.href = `https://www.torn.com/messages.php#/p=compose&XID=${encodeURIComponent(c.claimantId || '')}`;
+        setTimeout(tryFillManagerStatusMail, 1000);
+    }
+
     function renderClaims(body) {
-        body.innerHTML=`<div class="hji-toolbar"><button class="hji-btn good" id="hji-scan-mail">↻ Scan Torn Mail</button><button class="hji-btn" id="hji-add-claim">+ Manual claim</button></div>
-        <div class="hji-muted" style="margin-bottom:8px">Last scan: ${state.settings.lastMailScan?new Date(state.settings.lastMailScan).toLocaleString('en-GB'):'Never'}. Claims are detected from the HJI Torn Mail topic and matched by sender Torn ID where possible. Open the Torn Mail message to review the full claim body.</div>
-        <table class="hji-table"><thead><tr><th>Reference</th><th>Claimant</th><th>Submitted</th><th>Tier / Policy</th><th>Status</th><th></th></tr></thead><tbody>
-        ${[...state.claims].sort((a,b)=>new Date(b.submittedAt)-new Date(a.submittedAt)).map(c=>`<tr><td>${esc(c.reference)}</td><td>${esc(c.claimantName||'')} [${esc(c.claimantId||'')}]</td><td>${dateOnly(c.submittedAt)}</td><td>${esc(c.tierName||'')}</td><td class="hji-status ${c.status==='submitted'?'hji-pending':c.status==='approved'?'hji-active':c.status==='rejected'?'hji-expired':''}">${esc(c.status)}</td><td><button class="hji-btn" data-view-claim="${c.id}">View</button></td></tr>`).join('')||'<tr><td colspan="6">No claims yet.</td></tr>'}
-        </tbody></table>`;
+        body.innerHTML=`<div class="hji-toolbar">
+          <button class="hji-btn good" id="hji-scan-mail">↻ Scan Torn Mail</button>
+          <button class="hji-btn" id="hji-add-claim">+ Manual claim</button>
+        </div>
+
+        <div class="hji-help">
+          <strong>Claim workflow</strong>
+          <p>Use <b>Open Mail</b> to review the original Torn message, <b>Trade</b> to open a trade with the claimant for a payout, and <b>Notify</b> to prepare a structured status update for the Client.</p>
+          <p>The Manager never presses Torn's Send button automatically.</p>
+        </div>
+
+        <div class="hji-muted" style="margin-bottom:8px">
+          Last scan: ${state.settings.lastMailScan?new Date(state.settings.lastMailScan).toLocaleString('en-GB'):'Never'}.
+        </div>
+
+        <div class="hji-table-wrap"><table class="hji-table">
+          <thead><tr><th>Reference</th><th>Claimant</th><th>Submitted</th><th>Tier / Policy</th><th>Status</th><th>Actions</th></tr></thead>
+          <tbody>
+          ${[...state.claims].sort((a,b)=>new Date(b.submittedAt)-new Date(a.submittedAt)).map(c=>`
+            <tr>
+              <td>${esc(c.reference)}</td>
+              <td>${esc(c.claimantName||'')} [${esc(c.claimantId||'')}]</td>
+              <td>${dateOnly(c.submittedAt)}</td>
+              <td>${esc(c.tierName||'')}</td>
+              <td class="hji-status ${c.status==='submitted'?'hji-pending':c.status==='approved'||c.status==='paid'?'hji-active':c.status==='rejected'?'hji-expired':''}">
+                ${esc(claimStatusLabel(c.status))}
+              </td>
+              <td>
+                <div class="hji-toolbar" style="margin:0">
+                  <button class="hji-btn" data-view-claim="${c.id}">View</button>
+                  <button class="hji-btn" data-mail-claim="${c.id}">Open Mail</button>
+                  <button class="hji-btn good" data-trade-claim="${c.id}">Trade</button>
+                  <button class="hji-btn" data-notify-claim="${c.id}">Notify</button>
+                </div>
+              </td>
+            </tr>`).join('')||'<tr><td colspan="6">No claims yet.</td></tr>'}
+          </tbody>
+        </table></div>`;
+
         body.querySelector('#hji-scan-mail').onclick=scanMail;
         body.querySelector('#hji-add-claim').onclick=()=>manualClaimModal();
-        body.querySelectorAll('[data-view-claim]').forEach(b=>b.onclick=()=>claimModal(state.claims.find(c=>c.id===b.dataset.viewClaim)));
+
+        body.querySelectorAll('[data-view-claim]').forEach(b=>
+            b.onclick=()=>claimModal(state.claims.find(c=>c.id===b.dataset.viewClaim))
+        );
+        body.querySelectorAll('[data-mail-claim]').forEach(b=>
+            b.onclick=()=>openClaimMail(state.claims.find(c=>c.id===b.dataset.mailClaim))
+        );
+        body.querySelectorAll('[data-trade-claim]').forEach(b=>
+            b.onclick=()=>openClaimTrade(state.claims.find(c=>c.id===b.dataset.tradeClaim))
+        );
+        body.querySelectorAll('[data-notify-claim]').forEach(b=>
+            b.onclick=()=>prepareClaimStatusMail(state.claims.find(c=>c.id===b.dataset.notifyClaim))
+        );
     }
 
     function manualClaimModal(){
@@ -1031,14 +1224,64 @@
 
     function claimModal(c){
         const modal=createModal(`Claim ${c.reference}`);
-        modal.content.innerHTML+=`<div class="hji-card">
+
+        modal.content.innerHTML+=`
+        <div class="hji-card">
           <b style="font-size:14px">${esc(c.claimantName||'')} [${esc(c.claimantId||'')}]</b>
           <p><strong>Tier:</strong> ${esc(c.tierName||'—')}</p>
           <p><strong>Submitted:</strong> ${esc(new Date(c.submittedAt).toLocaleString('en-GB'))}</p>
           <p><strong>Source:</strong> ${esc(c.source||'')}</p>
-          <p><strong>Details</strong></p><pre style="white-space:pre-wrap">${esc(c.details||c.rawBody||'')}</pre>
-        </div><div class="hji-form" style="margin-top:10px"><label>Status<select id="cl-status">${['submitted','reviewing','approved','rejected','paid','closed'].map(x=>`<option value="${x}" ${c.status===x?'selected':''}>${x}</option>`).join('')}</select></label><label>Provider note<input id="cl-note" value="${esc(c.providerNote||'')}"></label></div>`;
-        modal.addSave(()=>{c.status=modal.el.querySelector('#cl-status').value;c.providerNote=modal.el.querySelector('#cl-note').value.trim();c.updatedAt=nowISO();saveAll();modal.close();renderTab();renderTabs();});
+          <p><strong>Details</strong></p>
+          <pre style="white-space:pre-wrap">${esc(c.details||c.rawBody||'')}</pre>
+        </div>
+
+        <div class="hji-toolbar">
+          <button class="hji-btn" id="claim-open-mail">Open original mail</button>
+          <button class="hji-btn good" id="claim-open-trade">Open trade</button>
+        </div>
+
+        <div class="hji-form" style="margin-top:10px">
+          <label>Status
+            <select id="cl-status">
+              ${['submitted','reviewing','approved','rejected','paid','closed'].map(x=>`<option value="${x}" ${c.status===x?'selected':''}>${claimStatusLabel(x)}</option>`).join('')}
+            </select>
+          </label>
+          <label>Provider note
+            <input id="cl-note" value="${esc(c.providerNote||'')}">
+          </label>
+        </div>`;
+
+        modal.el.querySelector('#claim-open-mail').onclick=()=>openClaimMail(c);
+        modal.el.querySelector('#claim-open-trade').onclick=()=>openClaimTrade(c);
+
+        modal.actions.insertAdjacentHTML(
+            'beforeend',
+            '<button class="hji-btn good" id="claim-save-notify">Save & Notify</button>'
+        );
+
+        const saveClaim=()=>{
+            c.status=modal.el.querySelector('#cl-status').value;
+            c.providerNote=modal.el.querySelector('#cl-note').value.trim();
+            c.updatedAt=nowISO();
+            saveAll();
+        };
+
+        modal.addSave(()=>{
+            saveClaim();
+            modal.close();
+            renderTab();
+            renderTabs();
+        });
+
+        modal.el.querySelector('#claim-save-notify').onclick=async()=>{
+            saveClaim();
+            const status=c.status;
+            const note=c.providerNote;
+            modal.close();
+            renderTab();
+            renderTabs();
+            await prepareClaimStatusMail(c,status,note);
+        };
     }
 
     function renderTiers(body) {
@@ -1812,6 +2055,7 @@
     function boot(){
         if (!document.body) return;
         addLauncher();
+        tryFillManagerStatusMail();
     }
 
     function startObserver(){
@@ -1822,6 +2066,7 @@
         }
         const observer = new MutationObserver(()=>{
             if(document.body && !document.getElementById('hji-launcher') && !overlay) addLauncher();
+            if(location.href.includes('messages.php')) tryFillManagerStatusMail();
         });
         observer.observe(target,{childList:true,subtree:true});
     }

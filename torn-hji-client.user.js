@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Client
 // @namespace    torn-hji
-// @version      0.3.5
+// @version      0.3.6
 // @description  Insured-user client for importing Happy Jump policies and preparing structured Torn Mail claims.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=torn.com
 // @grant        GM_getValue
 // @grant        GM_setValue
+// @grant        GM_xmlhttpRequest
+// @connect      api.torn.com
 // @run-at       document-idle
 // @downloadURL  https://raw.githubusercontent.com/DooBiiE/Torn-Happy-Jump-Insurance/main/torn-hji-client.user.js
 // @updateURL    https://raw.githubusercontent.com/DooBiiE/Torn-Happy-Jump-Insurance/main/torn-hji-client.user.js
@@ -16,10 +18,12 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.3.5';
+    const VERSION = '0.3.6';
     const PREFIX='torn_hji_client_v2_';
     const LEGACY_PREFIX='torn_hji_client_v1_';
     const CLAIM_PREFIX='[HJI CLAIM]';
+    const STATUS_PREFIX='[HJI STATUS]';
+    const API_BASE='https://api.torn.com/v2';
 
     function decodeStoredValue(value, fallback) {
         if (value === undefined || value === null || value === '') return fallback;
@@ -286,7 +290,120 @@
 
     state.policies = Array.isArray(storedPolicies) ? storedPolicies : [];
     state.claims = Array.isArray(storedClaims) ? storedClaims : [];
+    state.settings = state.settings && typeof state.settings==='object' && !Array.isArray(state.settings) ? state.settings : {};
+    state.settings.statusApiKey = String(state.settings.statusApiKey || '');
+    state.settings.lastStatusSync = state.settings.lastStatusSync || null;
     const save=()=>storage.set('state',state);
+
+
+    function clientClaimStatus(c){
+        return String(c?.status || 'prepared').toLowerCase();
+    }
+
+    function clientClaimStatusLabel(status){
+        return ({
+            prepared:'Prepared',
+            submitted:'Submitted',
+            reviewing:'Reviewing',
+            approved:'Approved',
+            rejected:'Rejected',
+            paid:'Paid',
+            closed:'Closed'
+        })[String(status||'prepared').toLowerCase()] || String(status||'Prepared');
+    }
+
+    function clientClaimStatusClass(status){
+        status=String(status||'prepared').toLowerCase();
+        if(status==='approved'||status==='paid') return 'hc-status-active';
+        if(status==='rejected') return 'hc-status-expired';
+        if(status==='reviewing'||status==='submitted') return 'hc-status-due';
+        return 'hc-status-muted';
+    }
+
+    function requestClientApi(url, apiKey){
+        return new Promise((resolve,reject)=>{
+            if(typeof GM_xmlhttpRequest==='function'){
+                try{
+                    GM_xmlhttpRequest({
+                        method:'GET',
+                        url,
+                        headers:{'Authorization':`ApiKey ${apiKey}`,'Accept':'application/json'},
+                        onload:r=>{try{resolve(JSON.parse(r.responseText))}catch(e){reject(e)}},
+                        onerror:()=>reject(new Error('Torn API request failed'))
+                    });
+                    return;
+                }catch{}
+            }
+
+            fetch(url,{
+                headers:{'Authorization':`ApiKey ${apiKey}`,'Accept':'application/json'}
+            }).then(r=>r.json()).then(resolve,reject);
+        });
+    }
+
+    function getClientMessages(data){
+        if(Array.isArray(data?.messages)) return data.messages;
+        return [];
+    }
+
+    function parseStatusTopic(m){
+        const topic=String(m?.topic||m?.subject||m?.title||'').trim();
+        if(!topic.startsWith(STATUS_PREFIX)) return null;
+
+        const match=topic.match(/^\[HJI STATUS\]\s+(HJI-[A-Z0-9_-]+)\s+(SUBMITTED|REVIEWING|APPROVED|REJECTED|PAID|CLOSED)\b/i);
+        if(!match) return null;
+
+        const sender=m?.sender && typeof m.sender==='object' ? m.sender : {};
+        return {
+            reference:match[1],
+            status:match[2].toLowerCase(),
+            senderId:String(sender.id ?? m?.sender_id ?? ''),
+            senderName:String(sender.name ?? m?.sender_name ?? ''),
+            timestamp:Number(m?.timestamp||0)
+        };
+    }
+
+    async function syncClaimStatuses(){
+        const key=String(state.settings.statusApiKey||'').trim();
+        if(!key) return alert('Add the optional Claim Status Sync API key in Client Settings first.');
+
+        try{
+            const data=await requestClientApi(`${API_BASE}/user/messages?limit=100&sort=DESC`,key);
+            if(data?.error) throw new Error(data.error.error||data.error.message||JSON.stringify(data.error));
+
+            const updates=getClientMessages(data)
+                .map(parseStatusTopic)
+                .filter(Boolean)
+                .sort((a,b)=>a.timestamp-b.timestamp);
+
+            let matched=0;
+            let changed=0;
+
+            for(const update of updates){
+                const claim=state.claims.find(c=>c.reference===update.reference);
+                if(!claim) continue;
+
+                // Only accept a status message from the provider attached to this claim.
+                if(claim.providerId && update.senderId && String(claim.providerId)!==String(update.senderId)) continue;
+
+                matched++;
+                if(clientClaimStatus(claim)!==update.status){
+                    claim.status=update.status;
+                    claim.statusUpdatedAt=update.timestamp ? new Date(update.timestamp*1000).toISOString() : new Date().toISOString();
+                    claim.statusSenderName=update.senderName||claim.providerName||'';
+                    changed++;
+                }
+            }
+
+            state.settings.lastStatusSync=new Date().toISOString();
+            save();
+
+            alert(`Claim status sync complete.\n\n${matched} status message${matched===1?'':'s'} matched\n${changed} claim${changed===1?'':'s'} updated`);
+            open('claims');
+        }catch(e){
+            alert(`Could not sync claim statuses.\n\n${e.message}`);
+        }
+    }
 
     function styles(){
         if(document.getElementById('hji-client-style'))return;
@@ -297,7 +414,7 @@
         #hji-client-app{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(700px,90vw);height:min(620px,78vh);min-width:300px;min-height:300px;max-width:97vw;max-height:92vh;overflow:hidden;background:var(--hc-bg);color:var(--hc-text);border:1px solid #555;border-radius:7px;font:14px Arial,sans-serif;box-shadow:0 12px 35px #000c;pointer-events:auto;resize:both;display:flex;flex-direction:column}
         #hji-client-app.hc-compact{width:min(560px,86vw);height:min(500px,66vh)}
         .hc-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;background:linear-gradient(#3b3b3b,#292929);border-bottom:1px solid #555;cursor:move;user-select:none;touch-action:none}.hc-head h2{margin:0;color:#f5f5f5;font-size:18px}.hc-head-actions{display:flex;gap:6px}
-        .hc-body{padding:12px;overflow:auto;flex:1;background:var(--hc-bg);color:var(--hc-text)}
+        .hc-tabs{display:flex;gap:4px;padding:7px;background:#252525;border-bottom:1px solid #444;overflow:auto}.hc-tab{background:#333;color:#ddd;border:1px solid #555;border-radius:4px;padding:7px 10px;white-space:nowrap}.hc-tab.active{background:#555;color:#fff}.hc-body{padding:12px;overflow:auto;flex:1;background:var(--hc-bg);color:var(--hc-text)}
         .hc-card{background:var(--hc-panel);border:1px solid var(--hc-border);border-radius:5px;padding:11px;margin-bottom:10px;color:var(--hc-text)}.hc-card h3{margin:0 0 8px;color:#fff}
         .hc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.hc-field{background:#252525;padding:9px;border-radius:4px;color:#eee}.hc-field small{display:block;color:#aaa;margin-bottom:3px}
         .hc-btn{background:linear-gradient(#4a4a4a,#333);color:#f5f5f5!important;border:1px solid #606060;border-radius:4px;padding:8px 10px;cursor:pointer}.hc-btn.good{background:linear-gradient(#4f7e5e,#365942);border-color:#618e6c}.hc-btn.danger{background:linear-gradient(#8f4343,#683030);border-color:#a95656}.hc-close,.hc-size{background:#444;color:#f5f5f5;border:1px solid #666;border-radius:4px;padding:6px 9px;cursor:pointer}
@@ -363,31 +480,116 @@
     }
 
     let overlay=null;
-    function open(){
+    let currentClientView='policies';
+
+    function clientTabsHtml(){
+        return `
+          <div class="hc-tabs">
+            <button class="hc-tab ${currentClientView==='policies'?'active':''}" data-client-tab="policies">Policies</button>
+            <button class="hc-tab ${currentClientView==='claims'?'active':''}" data-client-tab="claims">Claims (${state.claims.length})</button>
+          </div>`;
+    }
+
+    function claimsViewHtml(){
+        const lastSync=state.settings.lastStatusSync
+            ? new Date(state.settings.lastStatusSync).toLocaleString('en-GB')
+            : 'Never';
+
+        return `
+          <div class="hc-help">
+            <strong>My claims</strong>
+            <p>Claims start as <b>Prepared</b>. When your provider sends a structured HJI status mail, the optional status-sync feature can update the status here.</p>
+            <p><b>Last status sync:</b> ${esc(lastSync)}</p>
+          </div>
+
+          <div class="hc-actions" style="margin:0 0 10px">
+            <button class="hc-btn good" id="hc-new-claim" ${state.policies.length?'':'disabled'}>Submit claim</button>
+            <button class="hc-btn" id="hc-sync-status">Sync claim statuses</button>
+          </div>
+
+          ${state.claims.length ? state.claims.slice().reverse().map(c=>`
+            <div class="hc-card">
+              <div class="hc-grid">
+                <div class="hc-field"><small>Reference</small><strong>${esc(c.reference)}</strong></div>
+                <div class="hc-field"><small>Status</small><span class="${clientClaimStatusClass(c.status)}">${esc(clientClaimStatusLabel(c.status))}</span></div>
+                <div class="hc-field"><small>Provider</small>${esc(c.providerName||'')} [${esc(c.providerId||'')}]</div>
+                <div class="hc-field"><small>Created</small>${esc(new Date(c.createdAt).toLocaleString('en-GB'))}</div>
+              </div>
+              <div class="hc-field" style="margin-top:8px"><small>Claim summary</small>${esc(c.summary||'')}</div>
+            </div>`).join('') : '<div class="hc-card"><div class="hc-muted">No claims prepared yet.</div></div>'}
+        `;
+    }
+
+    function policiesViewHtml(){
+        return `
+          <div class="hc-help">
+            <strong>How this works</strong>
+            <p>Your insurer gives you an HJI setup code. Import it here, then choose that policy when you need to prepare a claim.</p>
+            <p><b>Your Torn account:</b> ${esc(state.claimantName||'Unknown')} ${state.claimantId?`[${esc(state.claimantId)}]`:''}</p>
+          </div>
+
+          <div class="hc-actions" style="margin:0 0 10px">
+            <button class="hc-btn good" id="hc-import">Import policy setup code</button>
+            <button class="hc-btn" id="hc-settings">Settings</button>
+          </div>
+
+          <div class="hc-card"><h3>My policies</h3>
+            ${state.policies.length?state.policies.map(p=>policyHtml(p)).join(''):'<div class="hc-muted">No policies imported yet. Ask your insurer for an HJI client setup code.</div>'}
+          </div>`;
+    }
+
+    function renderClientView(){
+        if(!overlay)return;
+        const body=overlay.querySelector('.hc-body');
+        if(!body)return;
+
+        body.innerHTML=currentClientView==='claims' ? claimsViewHtml() : policiesViewHtml();
+
+        if(currentClientView==='claims'){
+            body.querySelector('#hc-new-claim')?.addEventListener('click',claimModal);
+            body.querySelector('#hc-sync-status')?.addEventListener('click',syncClaimStatuses);
+        }else{
+            body.querySelector('#hc-settings')?.addEventListener('click',settingsModal);
+            body.querySelector('#hc-import')?.addEventListener('click',importModal);
+            body.querySelectorAll('[data-remove-policy]').forEach(b=>b.onclick=()=>removePolicy(b.dataset.removePolicy));
+        }
+    }
+
+    function open(view=null){
         styles();
         try{
             autoFillCurrentUser();
+            if(view) currentClientView=view;
+
             if(overlay)overlay.remove();
-            overlay=document.createElement('div');overlay.id='hji-client-overlay';overlay.innerHTML=`<div id="hji-client-app">
-              <div class="hc-head"><div><h2>🛡️ My Happy Jump Insurance</h2><div class="hc-muted">v${esc(VERSION)} · drag this header · resize from the lower-right</div></div><div class="hc-head-actions"><button class="hc-size">Size</button><button class="hc-close">Close</button></div></div>
-              <div class="hc-body">
-                <div class="hc-help"><strong>How this works</strong><p>Your insurer gives you an HJI setup code. Import it here, then choose that policy when you need to prepare a claim.</p><p><b>Your Torn account:</b> ${esc(state.claimantName||'Unknown')} ${state.claimantId?`[${esc(state.claimantId)}]`:''}</p><details><summary>Does the Client need an API key?</summary><p>No. The Client does not require an API key.</p></details></div>
-                <div class="hc-actions" style="margin:0 0 10px"><button class="hc-btn good" id="hc-import">Import policy setup code</button><button class="hc-btn" id="hc-claim" ${state.policies.length?'':'disabled'}>Submit claim</button><button class="hc-btn" id="hc-settings">Settings</button></div>
-                <div class="hc-card"><h3>My policies</h3>${state.policies.length?state.policies.map(p=>policyHtml(p)).join(''):'<div class="hc-muted">No policies imported yet. Ask your insurer for an HJI client setup code.</div>'}</div>
-                <div class="hc-card"><h3>My prepared claims</h3>${state.claims.length?state.claims.slice().reverse().map(c=>`<div class="hc-field" style="margin-bottom:6px"><strong>${esc(c.reference)}</strong><br><small>${esc(new Date(c.createdAt).toLocaleString('en-GB'))} · ${esc(c.providerName||'')}</small>${esc(c.summary||'')}</div>`).join(''):'<div class="hc-muted">No claims prepared yet.</div>'}</div>
+            overlay=document.createElement('div');
+            overlay.id='hji-client-overlay';
+            overlay.innerHTML=`<div id="hji-client-app">
+              <div class="hc-head">
+                <div><h2>🛡️ My Happy Jump Insurance</h2><div class="hc-muted">v${esc(VERSION)} · drag this header · resize from the lower-right</div></div>
+                <div class="hc-head-actions"><button class="hc-size">Size</button><button class="hc-close">Close</button></div>
               </div>
+              ${clientTabsHtml()}
+              <div class="hc-body"></div>
               <div class="hc-resize-grip" title="Drag to resize"></div>
             </div>`;
+
             document.body.appendChild(overlay);
+
             const app=overlay.querySelector('#hji-client-app');
             overlay.querySelector('.hc-close').onclick=()=>{overlay.remove();overlay=null};
             overlay.querySelector('.hc-size').onclick=()=>app.classList.toggle('hc-compact');
+
+            overlay.querySelectorAll('[data-client-tab]').forEach(b=>{
+                b.onclick=()=>{
+                    currentClientView=b.dataset.clientTab;
+                    open(currentClientView);
+                };
+            });
+
             makeDraggable(app,overlay.querySelector('.hc-head'),'windowPos');
             makeResizable(app,overlay.querySelector('.hc-resize-grip'),'windowSize');
-            overlay.querySelector('#hc-settings').onclick=settingsModal;
-            overlay.querySelector('#hc-import').onclick=importModal;
-            overlay.querySelector('#hc-claim').onclick=claimModal;
-            overlay.querySelectorAll('[data-remove-policy]').forEach(b=>b.onclick=()=>removePolicy(b.dataset.removePolicy));
+            renderClientView();
         }catch(e){
             console.error('[HJI Client] UI error:',e);
             if(overlay)overlay.innerHTML=`<div id="hji-client-app"><div class="hc-body"><div class="hc-help"><strong>HJI Client UI error</strong><p>${esc(e?.message||e)}</p></div></div></div>`;
@@ -453,22 +655,76 @@
     function settingsModal(){
         const body=overlay.querySelector('.hc-body');
         const detected=detectCurrentTornUser();
+        const keyUrl='https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Happy%20Jump%20Insurance%20Client%20Status&user=messages';
+
         body.innerHTML=`<div class="hc-card"><h3>Client settings</h3>
-          <div class="hc-help"><p>The Client tries to detect your logged-in Torn account automatically. These fields remain editable as a fallback.</p><p>No API key is required.</p></div>
-          <div class="hc-form"><label>Your Torn name<input id="cs-cname" value="${esc(state.claimantName||'')}"></label><label>Your Torn ID<input id="cs-cid" inputmode="numeric" value="${esc(state.claimantId||'')}"></label></div>
-          <div class="hc-actions"><button class="hc-btn good" id="cs-detect">Detect My Torn Account</button><button class="hc-btn good" id="cs-save">Save</button><button class="hc-btn" id="cs-back">Back</button></div>
-          <div class="hc-muted" style="margin-top:8px">${detected?`Detected from ${esc(detected.source)}: ${esc(detected.name||'Unknown')} [${esc(detected.id)}]`:'No account details were detected from the current Torn page yet.'}</div>
+          <div class="hc-help">
+            <p>The Client does <b>not</b> need an API key to import policies or submit claims.</p>
+            <p>An API key is optional and is used only if you want the Client to scan Torn Mail topics for claim-status updates from your provider.</p>
+          </div>
+
+          <div class="hc-form">
+            <label>Your Torn name<input id="cs-cname" value="${esc(state.claimantName||'')}"></label>
+            <label>Your Torn ID<input id="cs-cid" inputmode="numeric" value="${esc(state.claimantId||'')}"></label>
+
+            <label class="wide">Optional status-sync API key
+              <div style="display:flex;gap:7px">
+                <input id="cs-status-key" type="password" value="${esc(state.settings.statusApiKey||'')}" placeholder="Optional">
+                <button class="hc-btn" type="button" id="cs-show-key">Show</button>
+              </div>
+            </label>
+          </div>
+
+          <div class="hc-actions">
+            <button class="hc-btn" id="cs-detect">Detect My Torn Account</button>
+            <button class="hc-btn" id="cs-key-builder">Generate status-sync key</button>
+            <button class="hc-btn good" id="cs-save">Save</button>
+            <button class="hc-btn" id="cs-back">Back</button>
+          </div>
+
+          <div class="hc-muted" style="margin-top:8px">
+            ${detected?`Detected from ${esc(detected.source)}: ${esc(detected.name||'Unknown')} [${esc(detected.id)}]`:'No account details were detected from the current Torn page yet.'}
+          </div>
         </div>`;
+
+        const keyInput=body.querySelector('#cs-status-key');
+
+        body.querySelector('#cs-show-key').onclick=()=>{
+            const showing=keyInput.type==='text';
+            keyInput.type=showing?'password':'text';
+            body.querySelector('#cs-show-key').textContent=showing?'Show':'Hide';
+        };
+
         body.querySelector('#cs-detect').onclick=()=>{
             const found=detectCurrentTornUser();
             if(!found)return alert('Could not detect your Torn account from the current page. You can still enter the fields manually.');
             body.querySelector('#cs-cid').value=found.id;
             if(found.name)body.querySelector('#cs-cname').value=found.name;
-            state.claimantId=found.id;if(found.name)state.claimantName=found.name;save();
+            state.claimantId=found.id;
+            if(found.name)state.claimantName=found.name;
+            save();
             alert(`Detected ${found.name||'Torn user'} [${found.id}]`);
         };
-        body.querySelector('#cs-save').onclick=()=>{state.claimantName=body.querySelector('#cs-cname').value.trim();state.claimantId=body.querySelector('#cs-cid').value.trim();save();open();};
-        body.querySelector('#cs-back').onclick=open;
+
+        body.querySelector('#cs-key-builder').onclick=()=>{
+            const a=document.createElement('a');
+            a.href=keyUrl;
+            a.target='_blank';
+            a.rel='noopener noreferrer';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+        };
+
+        body.querySelector('#cs-save').onclick=()=>{
+            state.claimantName=body.querySelector('#cs-cname').value.trim();
+            state.claimantId=body.querySelector('#cs-cid').value.trim();
+            state.settings.statusApiKey=keyInput.value.trim();
+            save();
+            open('policies');
+        };
+
+        body.querySelector('#cs-back').onclick=()=>open('policies');
     }
 
     function claimModal(){
@@ -512,7 +768,7 @@
                 'Evidence / Link:',evidence||'None supplied','',
                 `HJI Client v${VERSION}`
             ].join('\n');
-            state.claims.push({reference,createdAt:new Date().toISOString(),providerId:p.providerId,providerName:p.providerName,policyId:p.policyId,summary:details.slice(0,120)});save();
+            state.claims.push({reference,createdAt:new Date().toISOString(),providerId:p.providerId,providerName:p.providerName,policyId:p.policyId,summary:details.slice(0,120),status:'prepared'});save();
             storage.set('pending_mail',{providerId:p.providerId,subject,body:msg,createdAt:Date.now()});
             copyText(`${subject}\n\n${msg}`).finally(()=>{
                 window.location.href=`https://www.torn.com/messages.php#/p=compose&XID=${encodeURIComponent(p.providerId)}`;
