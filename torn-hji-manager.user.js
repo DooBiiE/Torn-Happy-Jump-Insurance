@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.23
+// @version      0.4.24
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.23';
+    const VERSION = '0.4.24';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -1688,6 +1688,46 @@
         };
     }
 
+    function requestLegacyTornLog(url, apiKey) {
+        return new Promise((resolve, reject) => {
+            const joiner = url.includes('?') ? '&' : '?';
+            const authedUrl = `${url}${joiner}key=${encodeURIComponent(apiKey)}`;
+
+            if (typeof GM_xmlhttpRequest === 'function') {
+                try {
+                    GM_xmlhttpRequest({
+                        method:'GET',
+                        url:authedUrl,
+                        headers:{'Accept':'application/json'},
+                        onload:r=>{
+                            try {
+                                const parsed=JSON.parse(r.responseText);
+                                resolve(parsed);
+                            } catch(e) {
+                                reject(new Error(`Could not parse Torn log response (${r.status}).`));
+                            }
+                        },
+                        onerror:()=>reject(new Error('Torn legacy log request failed'))
+                    });
+                    return;
+                } catch {}
+            }
+
+            fetch(authedUrl, {
+                headers:{'Accept':'application/json'}
+            })
+            .then(async r=>{
+                const raw=await r.text();
+                try {
+                    return JSON.parse(raw);
+                } catch {
+                    throw new Error(`Could not parse Torn log response (${r.status}).`);
+                }
+            })
+            .then(resolve,reject);
+        });
+    }
+
     async function fetchItemReceiveLogs(fromUnix, toUnix) {
         const all = [];
         const seen = new Set();
@@ -1707,7 +1747,7 @@
                 `&from=${encodeURIComponent(fromUnix)}` +
                 `&to=${encodeURIComponent(cursorTo)}`;
 
-            const data = await requestApi(url, state.settings.apiKey);
+            const data = await requestLegacyTornLog(url, state.settings.apiKey);
 
             if (data?.error) {
                 throw new Error(
@@ -1716,6 +1756,15 @@
                     JSON.stringify(data.error)
                 );
             }
+
+            const rawLogCount = data?.log && typeof data.log === 'object'
+                ? (Array.isArray(data.log) ? data.log.length : Object.keys(data.log).length)
+                : 0;
+
+            console.info(
+                `[HJI Manager] Torn log page ${page}: ${rawLogCount} raw log entries returned`,
+                data
+            );
 
             const batch = getLogArray(data)
                 .sort((a,b)=>Number(b.timestamp||0)-Number(a.timestamp||0));
@@ -1810,7 +1859,7 @@
                 alert(
                     `Item receipt scan complete.\n\n` +
                     `${logs.length} Item receive log${logs.length===1?'':'s'} checked\n` +
-                    `Log source: Torn user log selection (4103)\n` +
+                    `Log source: Torn user log selection (4103, legacy-auth request)\n` +
                     `0 matching tier-payment candidates found\n\n` +
                     `Window: ${formatScanWindow(windowInfo.from, windowInfo.to)}
 ` +
@@ -3289,7 +3338,7 @@
 
         <div class="hji-card">
           <strong>Torn API <span class="hji-info" title="Used for reading claim mail and identifying the API-key owner.">i</span></strong>
-          <p class="hji-muted">The custom key requests <b>messages</b>, <b>newmessages</b>, <b>basic</b>, and <b>log</b>. Log access is used only when you press <b>Scan item payments</b>. HJI filters specifically for Torn's Item receive log (4103).</p>
+          <p class="hji-muted">The custom key requests <b>messages</b>, <b>newmessages</b>, <b>basic</b>, and <b>log</b>. Log access is used only when you press <b>Scan item payments</b>. HJI filters specifically for Torn's Item receive log (4103). Only this log request uses Torn's legacy-compatible key-query authentication; the rest of HJI continues using API v2.</p>
           <div class="hji-help">
             <strong>Log-access note</strong>
             <p>Torn requires a full-access API key for <code>user/log</code>. HJI does not continuously scan logs; it only requests them when you press the scan button, and matching/processed data stays in this Manager's local storage.</p>
