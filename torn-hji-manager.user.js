@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.6
+// @version      0.4.7
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.6';
+    const VERSION = '0.4.7';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -678,9 +678,38 @@
             document.body.appendChild(overlay);
             const app = overlay.querySelector('#hji-app');
             overlay.querySelector('.hji-close').onclick = () => { overlay.remove(); overlay=null; };
-            overlay.querySelector('.hji-size').onclick = () => app.classList.toggle('hji-compact');
+            overlay.querySelector('.hji-size').onclick = () => {
+                const compact = app.dataset.compact !== 'true';
+                app.dataset.compact = compact ? 'true' : 'false';
+                app.classList.toggle('hji-compact', compact);
+
+                const width = compact
+                    ? Math.min(window.innerWidth * 0.88, 760)
+                    : Math.min(window.innerWidth * 0.92, 980);
+                const height = compact
+                    ? Math.min(window.innerHeight * 0.72, 560)
+                    : Math.min(window.innerHeight * 0.82, 700);
+
+                app.style.width = `${Math.max(320, width)}px`;
+                app.style.height = `${Math.max(320, height)}px`;
+
+                const r = app.getBoundingClientRect();
+                storage.set('windowSize', {
+                    width: Math.round(r.width),
+                    height: Math.round(r.height)
+                });
+                storage.set('windowCompact', compact);
+            };
             makeDraggable(app, overlay.querySelector('.hji-head'), 'windowPos');
             makeResizable(app, overlay.querySelector('.hji-resize-grip'), 'windowSize');
+
+            if (storage.get('windowCompact', false) === true) {
+                app.dataset.compact = 'true';
+                app.classList.add('hji-compact');
+                app.style.width = `${Math.max(320, Math.min(window.innerWidth * 0.88, 760))}px`;
+                app.style.height = `${Math.max(320, Math.min(window.innerHeight * 0.72, 560))}px`;
+            }
+
             renderTabs();
             renderTab();
         } catch (e) {
@@ -1424,12 +1453,61 @@
     }
 
     function renderTiers(body) {
-        body.innerHTML=`<div class="hji-toolbar"><button class="hji-btn good" id="hji-add-tier">+ Add tier</button></div>
-        <table class="hji-table"><thead><tr><th>Name</th><th>Type</th><th>Coverage</th><th>Cash</th><th>Alternative item</th><th></th></tr></thead><tbody>
-        ${state.tiers.map(t=>`<tr><td>${esc(t.name)} ${!t.active?'<span class="hji-pill">Disabled</span>':''}</td><td>${esc(t.type)}</td><td>${esc(t.coverage)}</td><td>$${money(t.cashPrice)}</td><td>${t.itemName?`${esc(t.itemQty)} × ${esc(t.itemName)}`:'—'}</td><td><button class="hji-btn" data-edit-tier="${t.id}">Edit</button></td></tr>`).join('')}
-        </tbody></table>`;
+        body.innerHTML=`
+        <div class="hji-toolbar">
+          <button class="hji-btn good" id="hji-add-tier">+ Add tier</button>
+        </div>
+
+        <div class="hji-help">
+          <strong>Tier management</strong>
+          <p>You can add, edit or delete insurance tiers to match the provider's offering.</p>
+          <p>A tier that is still linked to an existing policy cannot be deleted. This protects historical policy and payment records.</p>
+        </div>
+
+        <div class="hji-table-wrap"><table class="hji-table">
+          <thead><tr><th>Name</th><th>Type</th><th>Coverage</th><th>Cash</th><th>Alternative item</th><th>Policies</th><th></th></tr></thead>
+          <tbody>
+          ${state.tiers.map(t=>{
+              const policyCount=state.policies.filter(p=>p.tierId===t.id).length;
+              return `<tr>
+                <td>${esc(t.name)} ${!t.active?'<span class="hji-pill">Disabled</span>':''}</td>
+                <td>${esc(t.type)}</td>
+                <td>${esc(t.coverage)}</td>
+                <td>$${money(t.cashPrice)}</td>
+                <td>${t.itemName?`${esc(t.itemQty)} × ${esc(t.itemName)}`:'—'}</td>
+                <td>${policyCount}</td>
+                <td>
+                  <div class="hji-toolbar" style="margin:0">
+                    <button class="hji-btn" data-edit-tier="${t.id}">Edit</button>
+                    <button class="hji-btn danger" data-delete-tier="${t.id}" ${policyCount ? 'disabled title="This tier is still linked to a policy"' : ''}>Delete</button>
+                  </div>
+                </td>
+              </tr>`;
+          }).join('') || '<tr><td colspan="7">No tiers configured.</td></tr>'}
+          </tbody>
+        </table></div>`;
+
         body.querySelector('#hji-add-tier').onclick=()=>tierModal();
         body.querySelectorAll('[data-edit-tier]').forEach(b=>b.onclick=()=>tierModal(getTier(b.dataset.editTier)));
+
+        body.querySelectorAll('[data-delete-tier]').forEach(b=>{
+            b.onclick=()=>{
+                const tier=getTier(b.dataset.deleteTier);
+                if(!tier)return;
+
+                const policyCount=state.policies.filter(p=>p.tierId===tier.id).length;
+                if(policyCount){
+                    alert(`Cannot delete "${tier.name}".\n\nIt is still linked to ${policyCount} polic${policyCount===1?'y':'ies'}.`);
+                    return;
+                }
+
+                if(!confirm(`Delete tier "${tier.name}"?\n\nThis removes the tier from this Manager. Existing backups can still restore it.`))return;
+
+                state.tiers=state.tiers.filter(t=>t.id!==tier.id);
+                saveAll();
+                renderTab();
+            };
+        });
     }
 
     function tierModal(existing=null){
