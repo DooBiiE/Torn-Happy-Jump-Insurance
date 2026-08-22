@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.12
+// @version      0.4.14
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,12 +19,17 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.12';
+    const VERSION = '0.4.14';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
     const POLICY_PREFIX = '[HJI POLICY]';
     const API_BASE = 'https://api.torn.com/v2';
+    const ITEM_RECEIVE_LOG_ID = 4103;
+    const ITEM_SCAN_FIRST_LOOKBACK_SECONDS = 7 * 24 * 60 * 60;
+    const ITEM_SCAN_OVERLAP_SECONDS = 5 * 60;
+    const ITEM_SCAN_PAGE_LIMIT = 100;
+
 
     function decodeStoredValue(value, fallback) {
         if (value === undefined || value === null || value === '') return fallback;
@@ -828,7 +833,18 @@
     }
 
     function getLogArray(data) {
-        return Array.isArray(data?.log) ? data.log : [];
+        if (!data || typeof data !== 'object') return [];
+
+        if (Array.isArray(data.log)) return data.log;
+
+        if (data.log && typeof data.log === 'object') {
+            return Object.entries(data.log).map(([id, entry]) => ({
+                ...(entry && typeof entry === 'object' ? entry : {}),
+                id: entry?.id ?? id
+            }));
+        }
+
+        return [];
     }
 
     function deepEntries(obj, path='') {
@@ -873,13 +889,19 @@
         const category = String(log.details?.category || '').trim();
         const titleLower = `${title} ${category}`.toLowerCase();
 
-        // Only accept logs that look clearly incoming. Ambiguous transfer logs are
-        // deliberately ignored rather than risking a false customer/policy creation.
-        const incomingByTitle =
-            /(item|items).*(received|gifted|given to you)/i.test(titleLower) ||
-            /(received|gifted).*(item|items)/i.test(titleLower);
-
         const entries = deepEntries({data:log.data, params:log.params});
+
+        // Torn commonly phrases item transfers like:
+        // "Storm_blade2418 sent some Xanax to you with the message: 5dvd jump insurance"
+        const sentSomeMatch = title.match(
+            /^(.+?)\s+sent\s+some\s+(.+?)\s+to\s+you(?:\s+with\s+the\s+message:\s*(.*))?$/i
+        );
+
+        const incomingByTitle =
+            Boolean(sentSomeMatch) ||
+            /(item|items).*(received|gifted|given to you)/i.test(titleLower) ||
+            /(received|gifted).*(item|items)/i.test(titleLower) ||
+            /\bsent\b.*\bto you\b/i.test(titleLower);
 
         const direction = candidateString(entries, /^(direction|type|action)$/i).toLowerCase();
         const incomingByField = /^(incoming|received|receive|in)$/i.test(direction);
@@ -890,7 +912,7 @@
         let itemName = candidateString(entries, /^(item_name|itemname)$/i);
         let quantity = candidateNumber(entries, /^(quantity|qty|item_quantity|amount)$/i);
 
-        // Common nested `item: { id, name, quantity }` shape.
+        // Common nested item structure.
         const itemObjects = entries
             .filter(([,key,value]) => /^item$/i.test(String(key)) && value && typeof value === 'object')
             .map(([, ,value]) => value);
@@ -901,11 +923,21 @@
             if (!quantity) quantity=Number(item.quantity ?? item.qty ?? item.amount ?? 0);
         }
 
-        let senderId = candidateString(entries, /^(sender_id|senderid|from_id|fromid|player_id|user_id)$/i);
-        let senderName = candidateString(entries, /^(sender_name|sendername|from_name|fromname|player_name|username)$/i);
+        let senderId = candidateString(
+            entries,
+            /^(sender_id|senderid|from_id|fromid|player_id|user_id)$/i
+        );
+        let senderName = candidateString(
+            entries,
+            /^(sender_name|sendername|from_name|fromname|player_name|username)$/i
+        );
 
         const personObjects = entries
-            .filter(([,key,value]) => /^(sender|from|player|user)$/i.test(String(key)) && value && typeof value === 'object')
+            .filter(([,key,value]) =>
+                /^(sender|from|player|user)$/i.test(String(key)) &&
+                value &&
+                typeof value === 'object'
+            )
             .map(([, ,value]) => value);
 
         for (const person of personObjects) {
@@ -913,10 +945,37 @@
             if (!senderName && person.name) senderName=String(person.name);
         }
 
-        // Provider is not a prospective customer.
-        if (senderId && String(senderId) === String(state.settings.providerId || '')) return null;
+        // Fallback to Torn's human-readable log title.
+        let transferMessage = '';
+        if (sentSomeMatch) {
+            if (!senderName) senderName = String(sentSomeMatch[1] || '').trim();
+            if (!itemName) itemName = String(sentSomeMatch[2] || '').trim();
+            transferMessage = String(sentSomeMatch[3] || '').trim();
+        } else {
+            const messageMatch = title.match(/\bwith\s+the\s+message:\s*(.*)$/i);
+            transferMessage = String(messageMatch?.[1] || '').trim();
+        }
 
-        if ((!itemId && !itemName) || !quantity || (!senderId && !senderName)) return null;
+        // Some Torn logs expose quantity under alternate names. Be deliberately
+        // permissive here, but only use numeric fields.
+        if (!quantity) {
+            quantity = candidateNumber(
+                entries,
+                /^(count|items|item_count|itemcount|total|number)$/i
+            );
+        }
+
+        // If the structured log omitted quantity but a configured tier has exactly
+        // one matching item-name candidate, allow quantity to be inferred from that
+        // tier later instead of discarding the log immediately.
+        const hasItemIdentity = Boolean(itemId || itemName);
+        const hasSenderIdentity = Boolean(senderId || senderName);
+
+        if (!hasItemIdentity || !hasSenderIdentity) return null;
+
+        if (senderId && String(senderId) === String(state.settings.providerId || '')) {
+            return null;
+        }
 
         return {
             logId:String(log.id ?? ''),
@@ -927,6 +986,7 @@
             quantity:Number(quantity || 0),
             senderId:String(senderId || ''),
             senderName:String(senderName || ''),
+            transferMessage,
             raw:log
         };
     }
@@ -934,18 +994,41 @@
     function tierMatchesReceipt(tier, receipt) {
         if (!tier || tier.active === false || Number(tier.itemQty || 0) <= 0) return false;
 
-        const qtyMatch = Number(tier.itemQty || 0) === Number(receipt.quantity || 0);
-        if (!qtyMatch) return false;
-
         const tierId = String(tier.itemId || '').trim();
         const receiptId = String(receipt.itemId || '').trim();
 
-        if (tierId && receiptId) return tierId === receiptId;
+        let itemMatches = false;
 
-        const tierName = normalizeItemName(tier.itemName);
-        const receiptName = normalizeItemName(receipt.itemName);
+        if (tierId && receiptId) {
+            itemMatches = tierId === receiptId;
+        } else {
+            const tierName = normalizeItemName(tier.itemName);
+            const receiptName = normalizeItemName(receipt.itemName);
+            itemMatches = Boolean(tierName && receiptName && tierName === receiptName);
+        }
 
-        return Boolean(tierName && receiptName && tierName === receiptName);
+        if (!itemMatches) return false;
+
+        const receiptQty = Number(receipt.quantity || 0);
+
+        // Preferred: exact structured quantity match.
+        if (receiptQty > 0) {
+            return Number(tier.itemQty || 0) === receiptQty;
+        }
+
+        // Torn's visible log text sometimes says "sent some Xanax" without putting
+        // the amount in the title. If quantity is missing from API data, only allow
+        // a match when this is the sole active tier using this exact item.
+        const sameItemTiers = state.tiers.filter(t => {
+            if (!t || t.active === false || Number(t.itemQty || 0) <= 0) return false;
+
+            const tId = String(t.itemId || '').trim();
+            if (tierId && receiptId && tId) return tId === receiptId;
+
+            return normalizeItemName(t.itemName) === normalizeItemName(receipt.itemName);
+        });
+
+        return sameItemTiers.length === 1 && sameItemTiers[0].id === tier.id;
     }
 
     async function resolveReceiptSender(receipt) {
@@ -1021,7 +1104,7 @@
             amount:0,
             itemId:receipt.itemId || tier.itemId || '',
             itemName:receipt.itemName || tier.itemName || '',
-            itemQty:Number(receipt.quantity || 0),
+            itemQty:Number(receipt.quantity || tier.itemQty || 0),
             notes:`Detected from Torn item log${receipt.logId ? ` ${receipt.logId}` : ''}.`,
             sourceLogId:receipt.logId,
             createdAt:nowISO()
@@ -1049,8 +1132,9 @@
 
           <div class="hji-card">
             <p><b>From:</b> ${esc(receipt.senderName || 'Unknown')} ${receipt.senderId ? `[${esc(receipt.senderId)}]` : ''}</p>
-            <p><b>Item:</b> ${esc(receipt.quantity)} × ${esc(receipt.itemName || 'Item')} ${receipt.itemId ? `[ID ${esc(receipt.itemId)}]` : ''}</p>
+            <p><b>Item:</b> ${receipt.quantity ? `${esc(receipt.quantity)} × ` : ''}${esc(receipt.itemName || 'Item')} ${receipt.itemId ? `[ID ${esc(receipt.itemId)}]` : ''}</p>
             <p><b>Log:</b> ${esc(receipt.title || 'Incoming item transfer')}</p>
+            ${receipt.transferMessage ? `<p><b>Message:</b> ${esc(receipt.transferMessage)}</p>` : ''}
             <p><b>Customer:</b> ${existingCustomer ? 'Already exists' : 'New customer'}</p>
           </div>
 
@@ -1097,6 +1181,104 @@
         };
     }
 
+    function unixNow() {
+        return Math.floor(Date.now() / 1000);
+    }
+
+    function lastSuccessfulItemScanUnix() {
+        const value = state.settings.lastItemLogScan;
+        if (!value) return 0;
+
+        const ms = new Date(value).getTime();
+        return Number.isFinite(ms) ? Math.floor(ms / 1000) : 0;
+    }
+
+    function itemScanWindow() {
+        const now = unixNow();
+        const last = lastSuccessfulItemScanUnix();
+
+        if (!last) {
+            return {
+                from: now - ITEM_SCAN_FIRST_LOOKBACK_SECONDS,
+                to: now,
+                firstRun: true
+            };
+        }
+
+        return {
+            from: Math.max(0, last - ITEM_SCAN_OVERLAP_SECONDS),
+            to: now,
+            firstRun: false
+        };
+    }
+
+    async function fetchItemReceiveLogs(fromUnix, toUnix) {
+        const all = [];
+        const seen = new Set();
+        let cursorTo = Number(toUnix);
+        let page = 0;
+
+        while (cursorTo >= fromUnix && page < 50) {
+            page++;
+
+            const url =
+                `${API_BASE}/user/log` +
+                `?log=${ITEM_RECEIVE_LOG_ID}` +
+                `&from=${encodeURIComponent(fromUnix)}` +
+                `&to=${encodeURIComponent(cursorTo)}` +
+                `&limit=${ITEM_SCAN_PAGE_LIMIT}`;
+
+            const data = await requestApi(url, state.settings.apiKey);
+
+            if (data?.error) {
+                throw new Error(
+                    data.error.error ||
+                    data.error.message ||
+                    JSON.stringify(data.error)
+                );
+            }
+
+            const batch = getLogArray(data)
+                .filter(log => Number(log?.log ?? ITEM_RECEIVE_LOG_ID) === ITEM_RECEIVE_LOG_ID)
+                .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+
+            if (!batch.length) break;
+
+            for (const log of batch) {
+                const id = String(log?.id ?? '');
+                const key = id || `${log?.timestamp || ''}:${JSON.stringify(log?.data || {})}`;
+
+                if (seen.has(key)) continue;
+                seen.add(key);
+                all.push(log);
+            }
+
+            const oldest = Math.min(
+                ...batch
+                    .map(log => Number(log?.timestamp || 0))
+                    .filter(ts => Number.isFinite(ts) && ts > 0)
+            );
+
+            if (!Number.isFinite(oldest)) break;
+            if (oldest <= fromUnix) break;
+            if (batch.length < ITEM_SCAN_PAGE_LIMIT) break;
+
+            // Walk backwards one second so the next page cannot repeat the same boundary.
+            cursorTo = oldest - 1;
+        }
+
+        return all.filter(log => {
+            const ts = Number(log?.timestamp || 0);
+            return ts >= fromUnix && ts <= toUnix;
+        });
+    }
+
+    function formatScanWindow(fromUnix, toUnix) {
+        const from = new Date(fromUnix * 1000).toLocaleString('en-GB');
+        const to = new Date(toUnix * 1000).toLocaleString('en-GB');
+        return `${from} → ${to}`;
+    }
+
     async function scanItemPayments() {
         const key=String(state.settings.apiKey || '').trim();
         if(!key) return alert('Add the Manager API key in Settings first.');
@@ -1104,49 +1286,55 @@
         const btn=overlay?.querySelector('#hji-scan-items');
         if(btn){
             btn.disabled=true;
-            btn.textContent='Scanning item logs…';
+            btn.textContent='Scanning item receipts…';
         }
 
-        try {
-            const data=await requestApi(`${API_BASE}/user/log?limit=100`,key);
+        const windowInfo=itemScanWindow();
 
-            if(data?.error){
-                throw new Error(data.error.error || data.error.message || JSON.stringify(data.error));
-            }
+        try {
+            // Query Torn's dedicated direct-item receipt log type (Item receive 4103)
+            // for the complete time window, paging if more than 100 receipts exist.
+            const logs=await fetchItemReceiveLogs(windowInfo.from, windowInfo.to);
 
             const processed=new Set(
                 (state.settings.processedItemLogIds || []).map(String)
             );
 
-            const candidates=getLogArray(data)
+            const candidates=logs
                 .filter(log=>!processed.has(String(log?.id ?? '')))
                 .map(parseIncomingItemLog)
                 .filter(Boolean)
                 .sort((a,b)=>b.timestamp-a.timestamp);
 
-            state.settings.lastItemLogScan=nowISO();
+            // Only advance the checkpoint after the entire Torn API window was
+            // successfully retrieved. Next scan overlaps by five minutes.
+            state.settings.lastItemLogScan=
+                new Date(windowInfo.to * 1000).toISOString();
             saveAll();
 
             if(!candidates.length){
                 alert(
-                    'Item log scan complete.\n\n' +
-                    'No new clearly identifiable incoming item payments were found in the latest 100 logs.'
+                    `Item receipt scan complete.\n\n` +
+                    `${logs.length} Item receive log${logs.length===1?'':'s'} checked\n` +
+                    `0 new insurance-payment candidates found\n\n` +
+                    `Window: ${formatScanWindow(windowInfo.from, windowInfo.to)}`
                 );
                 renderDashboard(overlay.querySelector('.hji-body'));
                 return;
             }
 
-            // Process one prompt at a time so the provider remains in control.
             const queue=[...candidates];
 
             const showNext=async()=>{
                 const receipt=queue.shift();
+
                 if(!receipt){
                     renderDashboard(overlay.querySelector('.hji-body'));
                     return;
                 }
 
                 await resolveReceiptSender(receipt);
+
                 const matches=state.tiers.filter(t=>tierMatchesReceipt(t,receipt));
                 itemReceiptModal(receipt,matches,showNext);
             };
@@ -1156,8 +1344,8 @@
         } catch(e) {
             alert(
                 `Could not scan item-payment logs.\n\n${e.message}\n\n` +
-                `Torn's user/log endpoint requires a full-access API key. ` +
-                `Generate a new HJI Manager key from Settings if your current key does not include log access.`
+                `HJI scans Torn's Item receive log (4103). ` +
+                `The saved last-scan checkpoint is not advanced when a scan fails.`
             );
         } finally {
             if(btn){
@@ -1165,82 +1353,6 @@
                 btn.textContent='↻ Scan item payments';
             }
         }
-    }
-
-
-    function claimPayoutCashTotal() {
-        return normalizeCollection(state.claims, 'claims')
-            .filter(c => c?.status === 'paid' && c?.payoutMethod === 'cash')
-            .reduce((sum, c) => sum + Number(c.payoutAmount || 0), 0);
-    }
-
-    function claimPayoutItemTotals() {
-        const totals = new Map();
-
-        for (const c of normalizeCollection(state.claims, 'claims')) {
-            if (c?.status !== 'paid' || c?.payoutMethod !== 'item') continue;
-
-            const name = String(c.payoutItemName || '').trim() || 'Unnamed item';
-            const qty = Number(c.payoutItemQty || 0);
-
-            totals.set(name, (totals.get(name) || 0) + qty);
-        }
-
-        return [...totals.entries()]
-            .map(([name, qty]) => ({name, qty}))
-            .sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name));
-    }
-
-    function claimPayoutItemSummaryHtml() {
-        const items = claimPayoutItemTotals();
-
-        if (!items.length) {
-            return '<div class="hji-muted">No item claim payouts recorded yet.</div>';
-        }
-
-        return items.map(item =>
-            `<div class="hji-field" style="margin-bottom:6px"><strong>${esc(item.qty)}x ${esc(item.name)}</strong></div>`
-        ).join('');
-    }
-
-    function itemNetPosition() {
-        const map = new Map();
-
-        for (const p of normalizeCollection(state.payments, 'payments')) {
-            if (p?.method !== 'item') continue;
-            const name = String(p.itemName || '').trim() || 'Unnamed item';
-            const current = map.get(name) || {name, received:0, paidOut:0};
-            current.received += Number(p.itemQty || 0);
-            map.set(name, current);
-        }
-
-        for (const c of normalizeCollection(state.claims, 'claims')) {
-            if (c?.status !== 'paid' || c?.payoutMethod !== 'item') continue;
-            const name = String(c.payoutItemName || '').trim() || 'Unnamed item';
-            const current = map.get(name) || {name, received:0, paidOut:0};
-            current.paidOut += Number(c.payoutItemQty || 0);
-            map.set(name, current);
-        }
-
-        return [...map.values()]
-            .map(x => ({...x, net:x.received - x.paidOut}))
-            .sort((a,b) => Math.abs(b.net) - Math.abs(a.net) || a.name.localeCompare(b.name));
-    }
-
-    function itemNetSummaryHtml() {
-        const items = itemNetPosition();
-
-        if (!items.length) {
-            return '<div class="hji-muted">No item income or payouts recorded yet.</div>';
-        }
-
-        return items.map(item => {
-            const sign = item.net > 0 ? '+' : '';
-            return `<div class="hji-field" style="margin-bottom:6px">
-              <strong>${esc(item.name)}: ${sign}${esc(item.net)}</strong>
-              <div class="hji-muted">${esc(item.received)} received · ${esc(item.paidOut)} paid out</div>
-            </div>`;
-        }).join('');
     }
 
     function renderDashboard(body) {
@@ -1272,8 +1384,9 @@
 
           <div class="hji-help">
             <strong>Incoming item-payment scan</strong>
-            <p>Checks recent Torn logs for incoming item transfers that match your configured tier item ID/name and quantity. You confirm every match before HJI creates a customer, policy or payment.</p>
-            <p><b>Last item scan:</b> ${esc(lastItemScan)}</p>
+            <p>Checks Torn's <b>Item receive</b> log (4103) for direct item transfers that match your configured tier item ID/name and quantity. You confirm every match before HJI creates a customer, policy or payment.</p>
+            <p>First scan looks back <b>7 days</b>. Later scans start from the <b>last successful check</b> with a 5-minute overlap, and HJI remembers processed log IDs to prevent duplicates.</p>
+            <p><b>Last successful item scan:</b> ${esc(lastItemScan)}</p>
           </div>
 
           <div class="hji-grid">
@@ -2567,7 +2680,7 @@
 
         <div class="hji-card">
           <strong>Torn API <span class="hji-info" title="Used for reading claim mail and identifying the API-key owner.">i</span></strong>
-          <p class="hji-muted">The custom key requests <b>messages</b>, <b>newmessages</b>, <b>basic</b>, and <b>log</b>. Log access is used only when you press <b>Scan item payments</b>.</p>
+          <p class="hji-muted">The custom key requests <b>messages</b>, <b>newmessages</b>, <b>basic</b>, and <b>log</b>. Log access is used only when you press <b>Scan item payments</b>. HJI filters specifically for Torn's Item receive log (4103).</p>
           <div class="hji-help">
             <strong>Log-access note</strong>
             <p>Torn requires a full-access API key for <code>user/log</code>. HJI does not continuously scan logs; it only requests them when you press the scan button, and matching/processed data stays in this Manager's local storage.</p>
