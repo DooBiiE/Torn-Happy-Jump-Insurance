@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.14
+// @version      0.4.15
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.14';
+    const VERSION = '0.4.15';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -1353,6 +1353,70 @@
                 btn.textContent='↻ Scan item payments';
             }
         }
+    }
+
+    function claimPayoutCashTotal() {
+        return normalizeCollection(state.claims, 'claims')
+            .filter(c => c?.status === 'paid' && c?.payoutMethod === 'cash')
+            .reduce((sum, c) => sum + Number(c.payoutAmount || 0), 0);
+    }
+
+    function claimPayoutItemTotals() {
+        const totals = new Map();
+
+        for (const c of normalizeCollection(state.claims, 'claims')) {
+            if (c?.status !== 'paid' || c?.payoutMethod !== 'item') continue;
+            const name = String(c.payoutItemName || '').trim() || 'Unnamed item';
+            const qty = Number(c.payoutItemQty || 0);
+            totals.set(name, (totals.get(name) || 0) + qty);
+        }
+
+        return [...totals.entries()]
+            .map(([name, qty]) => ({name, qty}))
+            .sort((a,b) => b.qty-a.qty || a.name.localeCompare(b.name));
+    }
+
+    function claimPayoutItemSummaryHtml() {
+        const items=claimPayoutItemTotals();
+        if(!items.length) return '<div class="hji-muted">No item claim payouts recorded yet.</div>';
+
+        return items.map(item =>
+            `<div class="hji-field" style="margin-bottom:6px"><strong>${esc(item.qty)}x ${esc(item.name)}</strong></div>`
+        ).join('');
+    }
+
+    function itemNetSummaryHtml() {
+        const totals=new Map();
+
+        for(const p of normalizeCollection(state.payments,'payments')){
+            if(p?.method!=='item')continue;
+            const name=String(p.itemName||'').trim()||'Unnamed item';
+            const row=totals.get(name)||{name,received:0,paidOut:0};
+            row.received+=Number(p.itemQty||0);
+            totals.set(name,row);
+        }
+
+        for(const c of normalizeCollection(state.claims,'claims')){
+            if(c?.status!=='paid'||c?.payoutMethod!=='item')continue;
+            const name=String(c.payoutItemName||'').trim()||'Unnamed item';
+            const row=totals.get(name)||{name,received:0,paidOut:0};
+            row.paidOut+=Number(c.payoutItemQty||0);
+            totals.set(name,row);
+        }
+
+        const items=[...totals.values()]
+            .map(row=>({...row,net:row.received-row.paidOut}))
+            .sort((a,b)=>Math.abs(b.net)-Math.abs(a.net)||a.name.localeCompare(b.name));
+
+        if(!items.length) return '<div class="hji-muted">No item income or payouts recorded yet.</div>';
+
+        return items.map(item=>{
+            const sign=item.net>0?'+':'';
+            return `<div class="hji-field" style="margin-bottom:6px">
+              <strong>${esc(item.name)}: ${sign}${esc(item.net)}</strong>
+              <div class="hji-muted">${esc(item.received)} received · ${esc(item.paidOut)} paid out</div>
+            </div>`;
+        }).join('');
     }
 
     function renderDashboard(body) {
