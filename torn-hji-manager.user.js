@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.8
+// @version      0.4.9
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.8';
+    const VERSION = '0.4.9';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -116,6 +116,35 @@
     const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const money = n => Number(n || 0).toLocaleString('en-GB', {maximumFractionDigits: 0});
     const dateOnly = v => v ? new Date(v).toLocaleDateString('en-GB') : '—';
+
+    function parseMoneyInput(value) {
+        const cleaned = String(value ?? '')
+            .replace(/,/g, '')
+            .replace(/[^\d.-]/g, '');
+        const n = Number(cleaned);
+        return Number.isFinite(n) ? n : 0;
+    }
+
+    function formatMoneyInput(value) {
+        const n = parseMoneyInput(value);
+        return n.toLocaleString('en-GB', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+    }
+
+    function bindMoneyInput(input) {
+        if (!input) return;
+        input.value = formatMoneyInput(input.value);
+        input.addEventListener('blur', () => {
+            input.value = formatMoneyInput(input.value);
+        });
+        input.addEventListener('focus', () => {
+            // Keep separators visible while editing; parsing strips them on save.
+            setTimeout(() => input.select?.(), 0);
+        });
+    }
+
 
     const encodeSetup = obj => {
         const bytes = new TextEncoder().encode(JSON.stringify(obj));
@@ -416,12 +445,20 @@
             claimPollMinutes: 10,
             lastMailScan: null,
             apiAccountId: '',
-            apiAccountName: ''
+            apiAccountName: '',
+            lastItemLogScan: null,
+            processedItemLogIds: []
         };
         const decoded = decodeStoredValue(value, {});
-        return decoded && typeof decoded === 'object' && !Array.isArray(decoded)
+        const out = decoded && typeof decoded === 'object' && !Array.isArray(decoded)
             ? { ...defaults, ...decoded }
             : defaults;
+
+        out.processedItemLogIds = Array.isArray(out.processedItemLogIds)
+            ? out.processedItemLogIds.map(String).slice(-1000)
+            : [];
+
+        return out;
     }
 
     function normalizeCollection(value, name) {
@@ -605,12 +642,13 @@
           <div class="hji-form">
             <label>Renewal length (days)<input id="renew-days" inputmode="numeric" value="${days}"></label>
             <label>Payment method<select id="renew-method"><option value="cash">Cash</option><option value="item" ${tier.itemName ? '' : 'disabled'}>Item${tier.itemName ? ` (${esc(tier.itemName)})` : ''}</option></select></label>
-            <label>Cash amount<input id="renew-cash" inputmode="numeric" value="${Number(tier.cashPrice || 0)}"></label>
+            <label>Cash amount<input id="renew-cash" inputmode="decimal" value="${formatMoneyInput(tier.cashPrice || 0)}"></label>
             <label>Item quantity<input id="renew-itemqty" inputmode="numeric" value="${Number(tier.itemQty || 0)}"></label>
             <label class="wide">Renewal note<textarea id="renew-note" placeholder="Optional note"></textarea></label>
           </div>`;
 
         modal.el.querySelector('[data-save]').textContent = 'Renew policy';
+        bindMoneyInput(modal.el.querySelector('#renew-cash'));
         modal.addSave(() => {
             const renewalDays = Math.max(1, Number(modal.el.querySelector('#renew-days').value || days));
             const start = renewalBaseDate(policy);
@@ -628,7 +666,7 @@
                 toDate: newEnd.toISOString(),
                 days: renewalDays,
                 method,
-                amount: method === 'cash' ? Number(modal.el.querySelector('#renew-cash').value || 0) : 0,
+                amount: method === 'cash' ? parseMoneyInput(modal.el.querySelector('#renew-cash').value) : 0,
                 itemName: method === 'item' ? (tier.itemName || '') : '',
                 itemQty: method === 'item' ? Number(modal.el.querySelector('#renew-itemqty').value || 0) : 0,
                 note
@@ -640,7 +678,7 @@
                 policyId: policy.id,
                 date: nowISO(),
                 method,
-                amount: method === 'cash' ? Number(modal.el.querySelector('#renew-cash').value || 0) : 0,
+                amount: method === 'cash' ? parseMoneyInput(modal.el.querySelector('#renew-cash').value) : 0,
                 itemName: method === 'item' ? (tier.itemName || '') : '',
                 itemQty: method === 'item' ? Number(modal.el.querySelector('#renew-itemqty').value || 0) : 0,
                 notes: `Policy renewal: ${tier.name}${note ? ` — ${note}` : ''}`,
@@ -784,6 +822,351 @@
         ).join('');
     }
 
+
+    function normalizeItemName(value) {
+        return String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    }
+
+    function getLogArray(data) {
+        return Array.isArray(data?.log) ? data.log : [];
+    }
+
+    function deepEntries(obj, path='') {
+        const out=[];
+        if (!obj || typeof obj !== 'object') return out;
+
+        if (Array.isArray(obj)) {
+            obj.forEach((v,i)=>out.push(...deepEntries(v, `${path}[${i}]`)));
+            return out;
+        }
+
+        for (const [k,v] of Object.entries(obj)) {
+            const p = path ? `${path}.${k}` : k;
+            out.push([p,k,v]);
+            if (v && typeof v === 'object') out.push(...deepEntries(v,p));
+        }
+        return out;
+    }
+
+    function candidateString(entries, keyPattern) {
+        for (const [,key,value] of entries) {
+            if (!keyPattern.test(String(key))) continue;
+            if (typeof value === 'string' && value.trim()) return value.trim();
+            if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+        }
+        return '';
+    }
+
+    function candidateNumber(entries, keyPattern) {
+        for (const [,key,value] of entries) {
+            if (!keyPattern.test(String(key))) continue;
+            const n = Number(value);
+            if (Number.isFinite(n)) return n;
+        }
+        return 0;
+    }
+
+    function parseIncomingItemLog(log) {
+        if (!log || typeof log !== 'object') return null;
+
+        const title = String(log.details?.title || '').trim();
+        const category = String(log.details?.category || '').trim();
+        const titleLower = `${title} ${category}`.toLowerCase();
+
+        // Only accept logs that look clearly incoming. Ambiguous transfer logs are
+        // deliberately ignored rather than risking a false customer/policy creation.
+        const incomingByTitle =
+            /(item|items).*(received|gifted|given to you)/i.test(titleLower) ||
+            /(received|gifted).*(item|items)/i.test(titleLower);
+
+        const entries = deepEntries({data:log.data, params:log.params});
+
+        const direction = candidateString(entries, /^(direction|type|action)$/i).toLowerCase();
+        const incomingByField = /^(incoming|received|receive|in)$/i.test(direction);
+
+        if (!incomingByTitle && !incomingByField) return null;
+
+        let itemId = candidateString(entries, /^(item_id|itemid)$/i);
+        let itemName = candidateString(entries, /^(item_name|itemname)$/i);
+        let quantity = candidateNumber(entries, /^(quantity|qty|item_quantity|amount)$/i);
+
+        // Common nested `item: { id, name, quantity }` shape.
+        const itemObjects = entries
+            .filter(([,key,value]) => /^item$/i.test(String(key)) && value && typeof value === 'object')
+            .map(([, ,value]) => value);
+
+        for (const item of itemObjects) {
+            if (!itemId && item.id != null) itemId=String(item.id);
+            if (!itemName && item.name) itemName=String(item.name);
+            if (!quantity) quantity=Number(item.quantity ?? item.qty ?? item.amount ?? 0);
+        }
+
+        let senderId = candidateString(entries, /^(sender_id|senderid|from_id|fromid|player_id|user_id)$/i);
+        let senderName = candidateString(entries, /^(sender_name|sendername|from_name|fromname|player_name|username)$/i);
+
+        const personObjects = entries
+            .filter(([,key,value]) => /^(sender|from|player|user)$/i.test(String(key)) && value && typeof value === 'object')
+            .map(([, ,value]) => value);
+
+        for (const person of personObjects) {
+            if (!senderId && person.id != null) senderId=String(person.id);
+            if (!senderName && person.name) senderName=String(person.name);
+        }
+
+        // Provider is not a prospective customer.
+        if (senderId && String(senderId) === String(state.settings.providerId || '')) return null;
+
+        if ((!itemId && !itemName) || !quantity || (!senderId && !senderName)) return null;
+
+        return {
+            logId:String(log.id ?? ''),
+            timestamp:Number(log.timestamp || 0),
+            title,
+            itemId:String(itemId || ''),
+            itemName:String(itemName || ''),
+            quantity:Number(quantity || 0),
+            senderId:String(senderId || ''),
+            senderName:String(senderName || ''),
+            raw:log
+        };
+    }
+
+    function tierMatchesReceipt(tier, receipt) {
+        if (!tier || tier.active === false || Number(tier.itemQty || 0) <= 0) return false;
+
+        const qtyMatch = Number(tier.itemQty || 0) === Number(receipt.quantity || 0);
+        if (!qtyMatch) return false;
+
+        const tierId = String(tier.itemId || '').trim();
+        const receiptId = String(receipt.itemId || '').trim();
+
+        if (tierId && receiptId) return tierId === receiptId;
+
+        const tierName = normalizeItemName(tier.itemName);
+        const receiptName = normalizeItemName(receipt.itemName);
+
+        return Boolean(tierName && receiptName && tierName === receiptName);
+    }
+
+    async function resolveReceiptSender(receipt) {
+        if (receipt.senderName || !/^\d+$/.test(receipt.senderId)) return receipt;
+
+        try {
+            const data = await requestApi(
+                `${API_BASE}/user/${encodeURIComponent(receipt.senderId)}/basic`,
+                state.settings.apiKey
+            );
+            const identity = extractProfileIdentity(data);
+            if (identity?.name) receipt.senderName=identity.name;
+        } catch {}
+
+        return receipt;
+    }
+
+    function markItemLogProcessed(logId) {
+        if (!logId) return;
+        const ids = Array.isArray(state.settings.processedItemLogIds)
+            ? state.settings.processedItemLogIds.map(String)
+            : [];
+
+        if (!ids.includes(String(logId))) ids.push(String(logId));
+        state.settings.processedItemLogIds = ids.slice(-1000);
+        saveAll();
+    }
+
+    function createPolicyFromItemReceipt(receipt, tier) {
+        let customer = state.customers.find(c =>
+            receipt.senderId && String(c.tornId) === String(receipt.senderId)
+        );
+
+        if (!customer) {
+            customer = {
+                id:uid('customer'),
+                tornId:String(receipt.senderId || ''),
+                name:receipt.senderName || `Torn user ${receipt.senderId || ''}`.trim(),
+                notes:'Added from incoming item-payment log.',
+                createdAt:nowISO()
+            };
+            state.customers.push(customer);
+        }
+
+        const start = receipt.timestamp
+            ? new Date(receipt.timestamp * 1000)
+            : new Date();
+
+        const policy = {
+            id:uid('policy'),
+            customerId:customer.id,
+            tierId:tier.id,
+            tierName:tier.name,
+            type:tier.type,
+            startDate:start.toISOString(),
+            endDate:tier.type==='monthly'
+                ? new Date(start.getTime() + Number(tier.durationDays || 30) * 86400000).toISOString()
+                : null,
+            status:'active',
+            used:false,
+            createdAt:nowISO(),
+            sourceItemLogId:receipt.logId
+        };
+
+        state.policies.push(policy);
+
+        state.payments.push({
+            id:uid('payment'),
+            customerId:customer.id,
+            policyId:policy.id,
+            date:start.toISOString(),
+            method:'item',
+            amount:0,
+            itemId:receipt.itemId || tier.itemId || '',
+            itemName:receipt.itemName || tier.itemName || '',
+            itemQty:Number(receipt.quantity || 0),
+            notes:`Detected from Torn item log${receipt.logId ? ` ${receipt.logId}` : ''}.`,
+            sourceLogId:receipt.logId,
+            createdAt:nowISO()
+        });
+
+        markItemLogProcessed(receipt.logId);
+        saveAll();
+
+        return {customer,policy};
+    }
+
+    function itemReceiptModal(receipt, matches, onDone) {
+        const modal=createModal('Incoming item payment detected');
+
+        const existingCustomer = state.customers.find(c =>
+            receipt.senderId && String(c.tornId)===String(receipt.senderId)
+        );
+
+        modal.content.innerHTML += `
+          <div class="hji-help">
+            <strong>Possible insurance payment</strong>
+            <p>HJI found an incoming item transfer that matches ${matches.length ? 'one or more configured tiers' : 'no tier exactly yet'}.</p>
+            <p>Nothing will be created until you confirm it.</p>
+          </div>
+
+          <div class="hji-card">
+            <p><b>From:</b> ${esc(receipt.senderName || 'Unknown')} ${receipt.senderId ? `[${esc(receipt.senderId)}]` : ''}</p>
+            <p><b>Item:</b> ${esc(receipt.quantity)} × ${esc(receipt.itemName || 'Item')} ${receipt.itemId ? `[ID ${esc(receipt.itemId)}]` : ''}</p>
+            <p><b>Log:</b> ${esc(receipt.title || 'Incoming item transfer')}</p>
+            <p><b>Customer:</b> ${existingCustomer ? 'Already exists' : 'New customer'}</p>
+          </div>
+
+          <div class="hji-form">
+            <label class="wide">Insurance tier
+              <select id="receipt-tier">
+                ${matches.length
+                    ? matches.map(t=>`<option value="${t.id}">${esc(t.name)} · ${esc(t.type==='monthly'?'Monthly':'Single jump')}</option>`).join('')
+                    : `<option value="">No exact tier match</option>`}
+              </select>
+            </label>
+          </div>`;
+
+        modal.actions.innerHTML = `
+          <button class="hji-btn" id="receipt-later">Later</button>
+          <button class="hji-btn danger" id="receipt-ignore">Ignore this transfer</button>
+          <button class="hji-btn good" id="receipt-create" ${matches.length?'':'disabled'}>${existingCustomer?'Create policy':'Add customer + policy'}</button>`;
+
+        modal.el.querySelector('#receipt-later').onclick=()=>{
+            modal.close();
+            onDone?.();
+        };
+
+        modal.el.querySelector('#receipt-ignore').onclick=()=>{
+            markItemLogProcessed(receipt.logId);
+            modal.close();
+            onDone?.();
+        };
+
+        modal.el.querySelector('#receipt-create').onclick=()=>{
+            const tier=getTier(modal.el.querySelector('#receipt-tier').value);
+            if(!tier)return alert('Choose a matching tier.');
+
+            const created=createPolicyFromItemReceipt(receipt,tier);
+            modal.close();
+
+            alert(
+                `${created.customer.name} is now covered by ${tier.name}.\n\n` +
+                `The item payment has also been recorded and linked to the policy.`
+            );
+
+            renderDashboard(overlay.querySelector('.hji-body'));
+            onDone?.();
+        };
+    }
+
+    async function scanItemPayments() {
+        const key=String(state.settings.apiKey || '').trim();
+        if(!key) return alert('Add the Manager API key in Settings first.');
+
+        const btn=overlay?.querySelector('#hji-scan-items');
+        if(btn){
+            btn.disabled=true;
+            btn.textContent='Scanning item logs…';
+        }
+
+        try {
+            const data=await requestApi(`${API_BASE}/user/log?limit=100`,key);
+
+            if(data?.error){
+                throw new Error(data.error.error || data.error.message || JSON.stringify(data.error));
+            }
+
+            const processed=new Set(
+                (state.settings.processedItemLogIds || []).map(String)
+            );
+
+            const candidates=getLogArray(data)
+                .filter(log=>!processed.has(String(log?.id ?? '')))
+                .map(parseIncomingItemLog)
+                .filter(Boolean)
+                .sort((a,b)=>b.timestamp-a.timestamp);
+
+            state.settings.lastItemLogScan=nowISO();
+            saveAll();
+
+            if(!candidates.length){
+                alert(
+                    'Item log scan complete.\n\n' +
+                    'No new clearly identifiable incoming item payments were found in the latest 100 logs.'
+                );
+                renderDashboard(overlay.querySelector('.hji-body'));
+                return;
+            }
+
+            // Process one prompt at a time so the provider remains in control.
+            const queue=[...candidates];
+
+            const showNext=async()=>{
+                const receipt=queue.shift();
+                if(!receipt){
+                    renderDashboard(overlay.querySelector('.hji-body'));
+                    return;
+                }
+
+                await resolveReceiptSender(receipt);
+                const matches=state.tiers.filter(t=>tierMatchesReceipt(t,receipt));
+                itemReceiptModal(receipt,matches,showNext);
+            };
+
+            showNext();
+
+        } catch(e) {
+            alert(
+                `Could not scan item-payment logs.\n\n${e.message}\n\n` +
+                `Torn's user/log endpoint requires a full-access API key. ` +
+                `Generate a new HJI Manager key from Settings if your current key does not include log access.`
+            );
+        } finally {
+            if(btn){
+                btn.disabled=false;
+                btn.textContent='↻ Scan item payments';
+            }
+        }
+    }
+
     function renderDashboard(body) {
         const activePolicies = state.policies.filter(p=>policyStatus(p)[0]==='Active').length;
         const dueSoon = state.policies.filter(p=>policyStatus(p)[0]==='Due soon').length;
@@ -795,7 +1178,21 @@
         const itemTotals = itemPaymentTotals();
         const totalItemUnits = itemTotals.reduce((sum,item)=>sum+Number(item.qty||0),0);
 
+        const lastItemScan = state.settings.lastItemLogScan
+            ? new Date(state.settings.lastItemLogScan).toLocaleString('en-GB')
+            : 'Never';
+
         body.innerHTML=`
+          <div class="hji-toolbar">
+            <button class="hji-btn good" id="hji-scan-items">↻ Scan item payments</button>
+          </div>
+
+          <div class="hji-help">
+            <strong>Incoming item-payment scan</strong>
+            <p>Checks recent Torn logs for incoming item transfers that match your configured tier item ID/name and quantity. You confirm every match before HJI creates a customer, policy or payment.</p>
+            <p><b>Last item scan:</b> ${esc(lastItemScan)}</p>
+          </div>
+
           <div class="hji-grid">
             <div class="hji-card">Customers<b>${state.customers.length}</b></div>
             <div class="hji-card">Active policies<b>${activePolicies}</b></div>
@@ -834,6 +1231,8 @@
             <strong>Quick notes</strong>
             <p>Use Policies for cover status and renewals, Payments for cash/item records, and Claims for payout handling and Torn Mail sync.</p>
           </div>`;
+
+        body.querySelector('#hji-scan-items').onclick=scanItemPayments;
     }
 
     function renderCustomers(body) {
@@ -1058,7 +1457,7 @@
           </label>
 
           <label>Cash amount
-            <input id="pay-amount" inputmode="numeric" value="${Number(existing?.amount||0)}">
+            <input id="pay-amount" inputmode="decimal" value="${formatMoneyInput(existing?.amount||0)}">
           </label>
 
           <label>Item name
@@ -1080,6 +1479,7 @@
         const amountInput=modal.el.querySelector('#pay-amount');
         const itemInput=modal.el.querySelector('#pay-item');
         const qtyInput=modal.el.querySelector('#pay-qty');
+        bindMoneyInput(amountInput);
 
         function refreshPolicies(useExisting=true){
             const policies=state.policies.filter(p=>p.customerId===customerSelect.value);
@@ -1102,7 +1502,7 @@
             const tier=getTier(policy.tierId);
             if(!tier)return;
 
-            amountInput.value=Number(tier.cashPrice||0);
+            amountInput.value=formatMoneyInput(tier.cashPrice||0);
             itemInput.value=tier.itemName||'';
             qtyInput.value=Number(tier.itemQty||0);
         }
@@ -1144,7 +1544,7 @@
                 policyId:policySelect.value||null,
                 date:new Date(modal.el.querySelector('#pay-date').value+'T00:00:00').toISOString(),
                 method:methodSelect.value,
-                amount:Number(amountInput.value||0),
+                amount:parseMoneyInput(amountInput.value),
                 itemName:itemInput.value.trim(),
                 itemQty:Number(qtyInput.value||0),
                 notes:modal.el.querySelector('#pay-notes').value.trim(),
@@ -1521,7 +1921,7 @@
         <div class="hji-help">
           <strong>Tier management</strong>
           <p>You can add, edit or delete insurance tiers to match the provider's offering.</p>
-          <p>A tier that is still linked to an existing policy cannot be deleted. This protects historical policy and payment records.</p>
+          <p>A tier that is still linked to an existing policy cannot be deleted. This protects historical policy and payment records.</p><p>For automatic item-payment matching, set the alternative item name and quantity. Adding the Torn item ID as well makes matching more reliable.</p>
         </div>
 
         <div class="hji-table-wrap"><table class="hji-table">
@@ -1578,12 +1978,14 @@
           <label>Duration days<input id="tier-days" inputmode="numeric" value="${esc(existing?.durationDays??30)}"></label>
           <label>Maximum DVDs<input id="tier-dvds" inputmode="numeric" value="${esc(existing?.maxDvds??0)}"></label>
           <label class="wide">What's included / coverage<textarea id="tier-cover">${esc(existing?.coverage||'')}</textarea></label>
-          <label>Cash price<input id="tier-cash" inputmode="numeric" value="${esc(existing?.cashPrice??0)}"></label>
+          <label>Cash price<input id="tier-cash" inputmode="decimal" value="${formatMoneyInput(existing?.cashPrice??0)}"></label>
           <label>Enabled<select id="tier-active"><option value="1">Yes</option><option value="0" ${existing?.active===false?'selected':''}>No</option></select></label>
           <label>Alternative item<input id="tier-item" value="${esc(existing?.itemName||'')}"></label>
+          <label>Alternative item ID<input id="tier-item-id" inputmode="numeric" value="${esc(existing?.itemId||'')}" placeholder="Optional, improves log matching"></label>
           <label>Item quantity<input id="tier-qty" inputmode="numeric" value="${esc(existing?.itemQty??0)}"></label>
         </div>`;
-        modal.addSave(()=>{const data={name:modal.el.querySelector('#tier-name').value.trim(),type:modal.el.querySelector('#tier-type').value,durationDays:Number(modal.el.querySelector('#tier-days').value||0),maxDvds:Number(modal.el.querySelector('#tier-dvds').value||0),coverage:modal.el.querySelector('#tier-cover').value.trim(),cashPrice:Number(modal.el.querySelector('#tier-cash').value||0),active:modal.el.querySelector('#tier-active').value==='1',itemName:modal.el.querySelector('#tier-item').value.trim(),itemQty:Number(modal.el.querySelector('#tier-qty').value||0)};if(!data.name)return alert('Tier name is required.');if(existing)Object.assign(existing,data);else state.tiers.push({id:uid('tier'),...data});saveAll();modal.close();renderTab();});
+        bindMoneyInput(modal.el.querySelector('#tier-cash'));
+        modal.addSave(()=>{const data={name:modal.el.querySelector('#tier-name').value.trim(),type:modal.el.querySelector('#tier-type').value,durationDays:Number(modal.el.querySelector('#tier-days').value||0),maxDvds:Number(modal.el.querySelector('#tier-dvds').value||0),coverage:modal.el.querySelector('#tier-cover').value.trim(),cashPrice:parseMoneyInput(modal.el.querySelector('#tier-cash').value),active:modal.el.querySelector('#tier-active').value==='1',itemName:modal.el.querySelector('#tier-item').value.trim(),itemId:modal.el.querySelector('#tier-item-id').value.trim(),itemQty:Number(modal.el.querySelector('#tier-qty').value||0)};if(!data.name)return alert('Tier name is required.');if(existing)Object.assign(existing,data);else state.tiers.push({id:uid('tier'),...data});saveAll();modal.close();renderTab();});
     }
 
 
@@ -1931,7 +2333,7 @@
     }
 
     function renderSettings(body){
-        const customKeyUrl = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Happy%20Jump%20Insurance%20Manager&user=messages,newmessages,basic';
+        const customKeyUrl = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Happy%20Jump%20Insurance%20Manager&user=messages,newmessages,basic,log';
         body.innerHTML=`
         <div class="hji-help">
           <strong>Settings help</strong>
@@ -1956,7 +2358,11 @@
 
         <div class="hji-card">
           <strong>Torn API <span class="hji-info" title="Used for reading claim mail and identifying the API-key owner.">i</span></strong>
-          <p class="hji-muted">The custom key requests <b>user → messages</b>, <b>newmessages</b>, and <b>basic</b>. Basic is used only for the account-detection button.</p>
+          <p class="hji-muted">The custom key requests <b>messages</b>, <b>newmessages</b>, <b>basic</b>, and <b>log</b>. Log access is used only when you press <b>Scan item payments</b>.</p>
+          <div class="hji-help">
+            <strong>Log-access note</strong>
+            <p>Torn requires a full-access API key for <code>user/log</code>. HJI does not continuously scan logs; it only requests them when you press the scan button, and matching/processed data stays in this Manager's local storage.</p>
+          </div>
           <div class="hji-form">
             <label class="wide">Stored API key
               <div style="display:flex;gap:7px">
@@ -2100,7 +2506,7 @@
                 if (data?.error) throw new Error(data.error.error || data.error.message || JSON.stringify(data.error));
                 alert('The API key worked for the HJI message check.');
             } catch(e) {
-                alert(`API key test failed.\n\n${e.message}\n\nUse the HJI custom-key button and allow messages/newmessages/basic.`);
+                alert(`API key test failed.\n\n${e.message}\n\nUse the HJI custom-key button and allow messages/newmessages/basic/log. Item-log scanning requires full-access log permission.`);
             } finally {
                 btn.disabled = false;
                 btn.textContent = 'Test key';
