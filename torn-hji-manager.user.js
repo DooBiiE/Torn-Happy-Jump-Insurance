@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.22
+// @version      0.4.23
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,12 +19,13 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.22';
+    const VERSION = '0.4.23';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
     const POLICY_PREFIX = '[HJI POLICY]';
     const API_BASE = 'https://api.torn.com/v2';
+    const TORN_LOG_API_BASE = 'https://api.torn.com/user/';
     const ITEM_RECEIVE_LOG_ID = 4103;
     const ITEM_SCAN_FIRST_LOOKBACK_SECONDS = 3 * 24 * 60 * 60;
     const ITEM_SCAN_OVERLAP_SECONDS = 5 * 60;
@@ -1696,12 +1697,15 @@
         while (cursorTo >= fromUnix && page < 50) {
             page++;
 
+            // Torn's user log selection currently uses the legacy-compatible
+            // endpoint/response. Filtering by log=4103 here is reliable, while
+            // /v2/user/log has changed behaviour during the API v2 migration.
             const url =
-                `${API_BASE}/user/log` +
-                `?log=${ITEM_RECEIVE_LOG_ID}` +
+                `${TORN_LOG_API_BASE}` +
+                `?selections=log` +
+                `&log=${ITEM_RECEIVE_LOG_ID}` +
                 `&from=${encodeURIComponent(fromUnix)}` +
-                `&to=${encodeURIComponent(cursorTo)}` +
-                `&limit=${ITEM_SCAN_PAGE_LIMIT}`;
+                `&to=${encodeURIComponent(cursorTo)}`;
 
             const data = await requestApi(url, state.settings.apiKey);
 
@@ -1714,15 +1718,13 @@
             }
 
             const batch = getLogArray(data)
-                .filter(log => Number(log?.log ?? ITEM_RECEIVE_LOG_ID) === ITEM_RECEIVE_LOG_ID)
-                .sort((a, b) => Number(b.timestamp || 0) - Number(a.timestamp || 0));
+                .sort((a,b)=>Number(b.timestamp||0)-Number(a.timestamp||0));
 
             if (!batch.length) break;
 
             for (const log of batch) {
                 const id = String(log?.id ?? '');
                 const key = id || `${log?.timestamp || ''}:${JSON.stringify(log?.data || {})}`;
-
                 if (seen.has(key)) continue;
                 seen.add(key);
                 all.push(log);
@@ -1738,7 +1740,6 @@
             if (oldest <= fromUnix) break;
             if (batch.length < ITEM_SCAN_PAGE_LIMIT) break;
 
-            // Walk backwards one second so the next page cannot repeat the same boundary.
             cursorTo = oldest - 1;
         }
 
@@ -1758,7 +1759,7 @@
         const key=String(state.settings.apiKey || '').trim();
         if(!key) return alert('Add the Manager API key in Settings first.');
 
-        const btn=overlay?.querySelector('#hji-scan-items');
+        const btn=!forceLookbackDays ? overlay?.querySelector('#hji-scan-items') : null;
         if(btn){
             btn.disabled=true;
             btn.textContent='Scanning item receipts…';
@@ -1809,6 +1810,7 @@
                 alert(
                     `Item receipt scan complete.\n\n` +
                     `${logs.length} Item receive log${logs.length===1?'':'s'} checked\n` +
+                    `Log source: Torn user log selection (4103)\n` +
                     `0 matching tier-payment candidates found\n\n` +
                     `Window: ${formatScanWindow(windowInfo.from, windowInfo.to)}
 ` +
@@ -2044,14 +2046,28 @@
           </div>`;
 
         body.querySelector('#hji-scan-items').onclick=()=>scanItemPayments();
-        body.querySelector('#hji-rescan-items-3d').onclick=()=>{
+        body.querySelector('#hji-rescan-items-3d').onclick=async()=>{
             if(!confirm(
                 'Recovery rescan: check the last 3 days of Torn Item receive logs?\n\n' +
                 'Previously processed transfers WILL be included for review.\n' +
-                'Nothing is created automatically, so this is safe to use when an older scan was wrong.'
+                'Nothing is created automatically.'
             )) return;
 
-            scanItemPayments(3, true);
+            const recoveryBtn=body.querySelector('#hji-rescan-items-3d');
+            if(recoveryBtn){
+                recoveryBtn.disabled=true;
+                recoveryBtn.textContent='Recovery scanning 3 days…';
+            }
+
+            try{
+                await scanItemPayments(3, true);
+            }finally{
+                const b=overlay?.querySelector('#hji-rescan-items-3d');
+                if(b){
+                    b.disabled=false;
+                    b.textContent='↺ Recovery rescan 3 days';
+                }
+            }
         };
         body.querySelector('#hji-scan-log').onclick=processedItemScanLogModal;
     }
