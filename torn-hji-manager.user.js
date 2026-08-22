@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.19
+// @version      0.4.20
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,17 +19,17 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.19';
+    const VERSION = '0.4.20';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
     const POLICY_PREFIX = '[HJI POLICY]';
     const API_BASE = 'https://api.torn.com/v2';
     const ITEM_RECEIVE_LOG_ID = 4103;
-    const ITEM_SCAN_FIRST_LOOKBACK_SECONDS = 30 * 24 * 60 * 60;
+    const ITEM_SCAN_FIRST_LOOKBACK_SECONDS = 3 * 24 * 60 * 60;
     const ITEM_SCAN_OVERLAP_SECONDS = 5 * 60;
     const ITEM_SCAN_PAGE_LIMIT = 100;
-    const ITEM_SCANNER_SCHEMA_VERSION = 3;
+    const ITEM_SCANNER_SCHEMA_VERSION = 4;
 
 
     function decodeStoredValue(value, fallback) {
@@ -454,6 +454,7 @@
             apiAccountName: '',
             lastItemLogScan: null,
             processedItemLogIds: [],
+            processedItemScans: [],
             itemScannerSchemaVersion: 0
         };
         const decoded = decodeStoredValue(value, {});
@@ -465,6 +466,9 @@
             ? out.processedItemLogIds.map(String).slice(-1000)
             : [];
         out.itemScannerSchemaVersion = Number(out.itemScannerSchemaVersion || 0);
+        out.processedItemScans = Array.isArray(out.processedItemScans)
+            ? out.processedItemScans.slice(-500)
+            : [];
 
         return out;
     }
@@ -1186,6 +1190,74 @@
         return receipt;
     }
 
+    function processedScanRecord(logId) {
+        return (state.settings.processedItemScans || [])
+            .find(r => String(r.logId || '') === String(logId || ''));
+    }
+
+    function saveProcessedScanRecord(receipt, action, extra={}) {
+        state.settings.processedItemScans = Array.isArray(state.settings.processedItemScans)
+            ? state.settings.processedItemScans
+            : [];
+
+        const record = {
+            logId:String(receipt?.logId || ''),
+            timestamp:Number(receipt?.timestamp || 0),
+            senderId:String(receipt?.senderId || ''),
+            senderName:String(receipt?.senderName || ''),
+            itemId:String(receipt?.itemId || ''),
+            itemName:String(receipt?.itemName || ''),
+            quantity:Number(receipt?.quantity || 0),
+            transferMessage:String(receipt?.transferMessage || ''),
+            action:String(action || ''),
+            tierId:String(extra.tierId || ''),
+            tierName:String(extra.tierName || ''),
+            customerId:String(extra.customerId || ''),
+            policyId:String(extra.policyId || ''),
+            paymentId:String(extra.paymentId || ''),
+            processedAt:nowISO(),
+            reopened:Boolean(extra.reopened || false)
+        };
+
+        const idx = state.settings.processedItemScans.findIndex(
+            r => String(r.logId || '') === record.logId
+        );
+
+        if (idx >= 0) {
+            state.settings.processedItemScans[idx] = {
+                ...state.settings.processedItemScans[idx],
+                ...record
+            };
+        } else {
+            state.settings.processedItemScans.push(record);
+        }
+
+        state.settings.processedItemScans = state.settings.processedItemScans.slice(-500);
+        saveAll();
+    }
+
+    function unprocessItemLog(logId) {
+        const id=String(logId || '');
+        state.settings.processedItemLogIds =
+            (state.settings.processedItemLogIds || []).map(String).filter(x => x !== id);
+        saveAll();
+    }
+
+    function receiptFromProcessedRecord(record) {
+        return {
+            logId:String(record.logId || ''),
+            timestamp:Number(record.timestamp || 0),
+            senderId:String(record.senderId || ''),
+            senderName:String(record.senderName || ''),
+            itemId:String(record.itemId || ''),
+            itemName:String(record.itemName || ''),
+            quantity:Number(record.quantity || 0),
+            transferMessage:String(record.transferMessage || ''),
+            title:'Recovered processed Item receive',
+            raw:null
+        };
+    }
+
     function markItemLogProcessed(logId) {
         if (!logId) return;
         const ids = Array.isArray(state.settings.processedItemLogIds)
@@ -1337,12 +1409,14 @@
           <button class="hji-btn good" id="receipt-create" ${matches.length?'':'disabled'}>${existingCustomer?'Create policy':'Add customer + policy'}</button>`;
 
         modal.el.querySelector('#receipt-later').onclick=()=>{
+            saveProcessedScanRecord(receipt,'later');
             modal.close();
             onDone?.();
         };
 
         modal.el.querySelector('#receipt-ignore').onclick=()=>{
             markItemLogProcessed(receipt.logId);
+            saveProcessedScanRecord(receipt,'ignored');
             modal.close();
             onDone?.();
         };
@@ -1361,6 +1435,15 @@
 
             try{
                 const created=createPolicyFromItemReceipt(receipt,tier);
+
+                saveProcessedScanRecord(receipt,'created',{
+                    tierId:tier.id,
+                    tierName:tier.name,
+                    customerId:created.customer.id,
+                    policyId:created.policy.id,
+                    paymentId:created.payment.id,
+                    reopened:Boolean(processedScanRecord(receipt.logId))
+                });
 
                 modal.close();
 
@@ -1388,6 +1471,63 @@
                 );
             }
         };
+    }
+
+    function processedItemScanLogModal() {
+        const modal=createModal('Processed Item Scan Log');
+
+        const records=[...(state.settings.processedItemScans || [])]
+            .sort((a,b)=>(b.timestamp||0)-(a.timestamp||0));
+
+        modal.content.innerHTML += `
+          <div class="hji-help">
+            <strong>Item scan history</strong>
+            <p>This records item transfers you previously reviewed. If you accidentally ignored a valid payment, use <b>Reopen</b> to process it again.</p>
+          </div>
+
+          <div class="hji-table-wrap"><table class="hji-table">
+            <thead><tr><th>Date</th><th>Sender</th><th>Item</th><th>Message</th><th>Action</th><th></th></tr></thead>
+            <tbody>
+              ${records.map((r,i)=>`
+                <tr>
+                  <td>${r.timestamp ? new Date(r.timestamp*1000).toLocaleString('en-GB') : '—'}</td>
+                  <td>${esc(r.senderName||'Unknown')} ${r.senderId?`[${esc(r.senderId)}]`:''}</td>
+                  <td>${esc(r.quantity||0)}x ${esc(r.itemName||`Item ${r.itemId||''}`)}</td>
+                  <td>${esc(r.transferMessage||'')}</td>
+                  <td>${esc(r.action||'')}</td>
+                  <td>
+                    ${r.action==='created'
+                        ? `<span class="hji-muted">Created</span>`
+                        : `<button class="hji-btn" data-reopen-scan="${i}">Reopen</button>`}
+                  </td>
+                </tr>`).join('') || '<tr><td colspan="6">No processed item scans recorded yet.</td></tr>'}
+            </tbody>
+          </table></div>`;
+
+        modal.actions.innerHTML='<button class="hji-btn" data-close>Close</button>';
+        modal.el.querySelector('[data-close]').onclick=modal.close;
+
+        modal.el.querySelectorAll('[data-reopen-scan]').forEach(btn=>{
+            btn.onclick=async()=>{
+                const record=records[Number(btn.dataset.reopenScan)];
+                if(!record)return;
+
+                const receipt=receiptFromProcessedRecord(record);
+
+                // Re-open ignored items without losing their audit history.
+                unprocessItemLog(receipt.logId);
+
+                await resolveReceiptItem(receipt);
+                await resolveReceiptSender(receipt);
+
+                const matches=state.tiers.filter(t=>tierMatchesReceipt(t,receipt));
+
+                modal.close();
+                itemReceiptModal(receipt,matches,()=>{
+                    renderDashboard(overlay.querySelector('.hji-body'));
+                });
+            };
+        });
     }
 
     function unixNow() {
@@ -1427,7 +1567,7 @@
                 to: now,
                 firstRun: false,
                 recovery: true,
-                reason: 'Automatic 30-day scanner recovery backfill'
+                reason: 'Automatic 3-day scanner recovery backfill'
             };
         }
 
@@ -1709,14 +1849,15 @@
         body.innerHTML=`
           <div class="hji-toolbar">
             <button class="hji-btn good" id="hji-scan-items">↻ Scan item payments</button>
-            <button class="hji-btn" id="hji-rescan-items-30d">↺ Rescan last 30 days</button>
+            <button class="hji-btn" id="hji-rescan-items-3d">↺ Rescan last 3 days</button>
+            <button class="hji-btn" id="hji-scan-log">Processed scan log (${(state.settings.processedItemScans||[]).length})</button>
           </div>
 
           <div class="hji-help">
             <strong>Incoming item-payment scan</strong>
             <p>Checks Torn's <b>Item receive</b> log (4103) for direct item transfers that match your configured tier item ID/name and quantity. You confirm every match before HJI creates a customer, policy or payment.</p>
-            <p>First scan looks back <b>30 days</b>. Later scans start from the <b>last successful check</b> with a 5-minute overlap, and HJI remembers processed log IDs to prevent duplicates.</p>
-            <p><b>Rescan last 30 days</b> is a recovery tool for older transfers that were missed by a previous scanner version. Already processed log IDs are still ignored, so it will not duplicate accepted payments.</p>
+            <p>First scan looks back <b>3 days</b>. Later scans start from the <b>last successful check</b> with a 5-minute overlap, and HJI remembers processed log IDs to prevent duplicates.</p>
+            <p><b>Rescan last 3 days</b> is a recovery tool for older transfers that were missed by a previous scanner version. Already processed log IDs are still ignored, so it will not duplicate accepted payments.</p>
             <p><b>Watching for:</b> ${itemScanFilterSummaryHtml()}</p>
             <p class="hji-muted">Only incoming items configured on active tiers are considered possible insurance payments. Other incoming items are ignored.</p>
             <p><b>Last successful item scan:</b> ${esc(lastItemScan)}</p>
@@ -1794,10 +1935,11 @@
           </div>`;
 
         body.querySelector('#hji-scan-items').onclick=()=>scanItemPayments();
-        body.querySelector('#hji-rescan-items-30d').onclick=()=>{
-            if(!confirm('Rescan the last 30 days of Torn Item receive logs?\n\nAlready processed transfers will be ignored.')) return;
-            scanItemPayments(30);
+        body.querySelector('#hji-rescan-items-3d').onclick=()=>{
+            if(!confirm('Rescan the last 3 days of Torn Item receive logs?\n\nAlready processed transfers will be ignored.')) return;
+            scanItemPayments(3);
         };
+        body.querySelector('#hji-scan-log').onclick=processedItemScanLogModal;
     }
 
     function renderCustomers(body) {
