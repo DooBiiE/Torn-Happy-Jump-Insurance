@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Client
 // @namespace    torn-hji
-// @version      0.4.0
+// @version      0.4.1
 // @description  Insured-user client for importing Happy Jump policies and preparing structured Torn Mail claims.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -18,11 +18,12 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.4.0';
+    const VERSION = '0.4.1';
     const PREFIX='torn_hji_client_v2_';
     const LEGACY_PREFIX='torn_hji_client_v1_';
     const CLAIM_PREFIX='[HJI CLAIM]';
     const STATUS_PREFIX='[HJI STATUS]';
+    const POLICY_PREFIX='[HJI POLICY]';
     const API_BASE='https://api.torn.com/v2';
 
     function decodeStoredValue(value, fallback) {
@@ -385,53 +386,101 @@
         return true;
     }
 
+
+    function parsePolicyTopic(m){
+        const topic=String(m?.topic||m?.subject||m?.title||'').trim();
+        if(!topic.startsWith(POLICY_PREFIX)) return null;
+
+        const match=topic.match(/^\[HJI POLICY\]\s+([A-Za-z0-9_-]+)\s+(ACTIVE|EXPIRED|CANCELLED|USED|PAID_OUT)\b/i);
+        if(!match) return null;
+
+        const sender=m?.sender && typeof m.sender==='object' ? m.sender : {};
+        return {
+            policyId:match[1],
+            status:match[2].toLowerCase(),
+            senderId:String(sender.id ?? m?.sender_id ?? ''),
+            senderName:String(sender.name ?? m?.sender_name ?? ''),
+            timestamp:Number(m?.timestamp||0)
+        };
+    }
+
+    function applyPolicySyncUpdate(update){
+        const policy=state.policies.find(p=>String(p.policyId)===String(update.policyId));
+        if(!policy) return false;
+        if(policy.providerId && update.senderId && String(policy.providerId)!==String(update.senderId)) return false;
+
+        policy.status=update.status;
+        policy.statusUpdatedAt=update.timestamp ? new Date(update.timestamp*1000).toISOString() : new Date().toISOString();
+
+        if(update.status==='cancelled') policy.used=false;
+        if(update.status==='used') policy.used=true;
+        if(update.status==='paid_out'){
+            policy.used=true;
+            policy.paidOutAt=policy.paidOutAt || policy.statusUpdatedAt;
+        }
+
+        return true;
+    }
+
     async function syncClaimStatuses(){
         const key=String(state.settings.statusApiKey||'').trim();
-        if(!key) return alert('Add the optional Claim Status Sync API key in Client Settings first.');
+        if(!key) return alert('Add the optional Claim/Policy Sync API key in Client Settings first.');
 
         try{
             const data=await requestClientApi(`${API_BASE}/user/messages?limit=100&sort=DESC`,key);
             if(data?.error) throw new Error(data.error.error||data.error.message||JSON.stringify(data.error));
 
-            const updates=getClientMessages(data)
-                .map(parseStatusTopic)
-                .filter(Boolean)
-                .sort((a,b)=>a.timestamp-b.timestamp);
+            const messages=getClientMessages(data);
+            const claimUpdates=messages.map(parseStatusTopic).filter(Boolean).sort((a,b)=>a.timestamp-b.timestamp);
+            const policyUpdates=messages.map(parsePolicyTopic).filter(Boolean).sort((a,b)=>a.timestamp-b.timestamp);
 
-            let matched=0;
-            let changed=0;
+            let claimMatched=0, claimChanged=0, policyMatched=0, policyChanged=0;
 
-            for(const update of updates){
+            for(const update of claimUpdates){
                 const claim=state.claims.find(c=>c.reference===update.reference);
                 if(!claim) continue;
-
-                // Only accept a status message from the provider attached to this claim.
                 if(claim.providerId && update.senderId && String(claim.providerId)!==String(update.senderId)) continue;
 
-                matched++;
+                claimMatched++;
                 if(clientClaimStatus(claim)!==update.status){
                     claim.status=update.status;
                     claim.statusUpdatedAt=update.timestamp ? new Date(update.timestamp*1000).toISOString() : new Date().toISOString();
                     claim.statusSenderName=update.senderName||claim.providerName||'';
-
                     applyPaidClaimToClientPolicy(claim);
-                    changed++;
-                } else if (update.status === 'paid') {
-                    // Repair/complete the linked policy state even if the claim was
-                    // already marked paid on a previous sync.
+                    claimChanged++;
+                }else if(update.status==='paid'){
                     applyPaidClaimToClientPolicy(claim);
                 }
+            }
+
+            for(const update of policyUpdates){
+                const policy=state.policies.find(p=>String(p.policyId)===String(update.policyId));
+                if(!policy) continue;
+                if(policy.providerId && update.senderId && String(policy.providerId)!==String(update.senderId)) continue;
+
+                policyMatched++;
+                const before=String(policy.status||'active');
+                if(applyPolicySyncUpdate(update) && before!==update.status) policyChanged++;
             }
 
             state.settings.lastStatusSync=new Date().toISOString();
             save();
 
-            alert(`Claim status sync complete.\n\n${matched} status message${matched===1?'':'s'} matched\n${changed} claim${changed===1?'':'s'} updated\n\nSynced status mails can now be deleted from Torn Mail.`);
-            open('claims');
+            alert(
+                `Sync complete.\n\n`+
+                `${claimMatched} claim update${claimMatched===1?'':'s'} matched\n`+
+                `${claimChanged} claim${claimChanged===1?'':'s'} changed\n`+
+                `${policyMatched} policy update${policyMatched===1?'':'s'} matched\n`+
+                `${policyChanged} polic${policyChanged===1?'y':'ies'} changed\n\n`+
+                `Synced Torn Mail updates can now be deleted.`
+            );
+
+            open(currentClientView==='settings'?'policies':currentClientView);
         }catch(e){
-            alert(`Could not sync claim statuses.\n\n${e.message}`);
+            alert(`Could not sync claims/policies.\n\n${e.message}`);
         }
     }
+
 
     function styles(){
         if(document.getElementById('hji-client-style'))return;
@@ -656,13 +705,15 @@
     function policiesViewHtml(){
         return `
           <div class="hc-help">
-            <strong>How this works</strong>
-            <p>Your insurer gives you an HJI setup code. Import it here, then choose that policy when you need to prepare a claim.</p>
+            <strong>Policy status</strong>
+            <p>Your insurer gives you an HJI setup code. Import it here, then use <b>Sync policies</b> to receive policy status changes sent by the provider.</p>
+            <p><span class="hc-status-active">Green = active</span> · <span class="hc-status-due">Amber = due soon</span> · <span class="hc-status-expired">Red = expired</span> · Grey = cancelled / used / paid out.</p>
             <p><b>Your Torn account:</b> ${esc(state.claimantName||'Unknown')} ${state.claimantId?`[${esc(state.claimantId)}]`:''}</p>
           </div>
 
           <div class="hc-actions" style="margin:0 0 10px">
             <button class="hc-btn good" id="hc-import">Import policy setup code</button>
+            <button class="hc-btn" id="hc-sync-policies">Sync policies</button>
           </div>
 
           <div class="hc-card"><h3>My policies</h3>
@@ -677,11 +728,11 @@
           <div class="hc-form">
             <label>Your Torn name<input id="cs-cname" value="${esc(state.claimantName||'')}"></label>
             <label>Your Torn ID<input id="cs-cid" inputmode="numeric" value="${esc(state.claimantId||'')}"></label>
-            <label class="wide">Optional status-sync API key<div style="display:flex;gap:7px"><input id="cs-status-key" type="password" value="${esc(state.settings.statusApiKey||'')}" placeholder="Optional"><button class="hc-btn" type="button" id="cs-show-key">Show</button></div></label>
+            <label class="wide">Optional claim/policy sync API key<div style="display:flex;gap:7px"><input id="cs-status-key" type="password" value="${esc(state.settings.statusApiKey||'')}" placeholder="Optional"><button class="hc-btn" type="button" id="cs-show-key">Show</button></div></label>
           </div>
           <div class="hc-actions">
             <button class="hc-btn" id="cs-detect">Detect My Torn Account</button>
-            <button class="hc-btn" id="cs-key-builder">Generate status-sync key</button>
+            <button class="hc-btn" id="cs-key-builder">Generate sync key</button>
             <button class="hc-btn good" id="cs-save">Save settings</button>
           </div>
           <div class="hc-muted" style="margin-top:8px">${detected?`Detected from ${esc(detected.source)}: ${esc(detected.name||'Unknown')} [${esc(detected.id)}]`:'No account details were detected from the current Torn page yet.'}</div>
@@ -710,7 +761,7 @@
         }else if(currentClientView==='settings'){
             body.innerHTML=settingsViewHtml();
             const keyInput=body.querySelector('#cs-status-key');
-            const keyUrl='https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Happy%20Jump%20Insurance%20Client%20Status&user=messages';
+            const keyUrl='https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Happy%20Jump%20Insurance%20Client%20Sync&user=messages';
 
             body.querySelector('#cs-show-key').onclick=()=>{
                 const showing=keyInput.type==='text';
@@ -741,6 +792,7 @@
         }else{
             body.innerHTML=policiesViewHtml();
             body.querySelector('#hc-import')?.addEventListener('click',importModal);
+            body.querySelector('#hc-sync-policies')?.addEventListener('click',syncClaimStatuses);
             body.querySelectorAll('[data-remove-policy]').forEach(b=>b.onclick=()=>removePolicy(b.dataset.removePolicy));
         }
     }

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.5
+// @version      0.4.6
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,10 +19,11 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.5';
+    const VERSION = '0.4.6';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
+    const POLICY_PREFIX = '[HJI POLICY]';
     const API_BASE = 'https://api.torn.com/v2';
 
     function decodeStoredValue(value, fallback) {
@@ -777,13 +778,78 @@
         };
     }
 
+
+    function policySyncStatus(policy) {
+        const [label] = policyStatus(policy);
+        return ({
+            'Active':'active',
+            'Due soon':'active',
+            'Expired':'expired',
+            'Cancelled':'cancelled',
+            'Used':'used',
+            'Paid out':'paid_out'
+        })[label] || String(policy.status || 'active');
+    }
+
+    function buildPolicyStatusMail(policy) {
+        const customer = getCustomer(policy.customerId);
+        const tier = getTier(policy.tierId);
+        if (!customer) throw new Error('Policy customer is missing.');
+
+        const status = policySyncStatus(policy);
+        const subject = `${POLICY_PREFIX} ${policy.id} ${status.toUpperCase()}`;
+        const body = [
+            POLICY_PREFIX,
+            `Policy ID: ${policy.id}`,
+            `Status: ${status}`,
+            `Customer: ${customer.name} [${customer.tornId}]`,
+            `Provider: ${state.settings.providerName || ''} [${state.settings.providerId || ''}]`,
+            `Tier: ${tier?.name || policy.tierName || ''}`,
+            policy.endDate ? `Valid Until: ${policy.endDate}` : '',
+            policy.payoutClaimReference ? `Payout Claim: ${policy.payoutClaimReference}` : '',
+            '',
+            'Sync this update in the Happy Jump Insurance Client.',
+            `HJI Manager v${VERSION}`
+        ].filter(Boolean).join('\n');
+
+        return {subject, body, customer};
+    }
+
+    async function preparePolicyStatusMail(policy) {
+        if (!policy) return;
+
+        let mail;
+        try { mail = buildPolicyStatusMail(policy); }
+        catch (e) { alert(e.message); return; }
+
+        managerMailFillInProgress = false;
+        storage.set('pendingStatusMail', null);
+
+        await copyText(`${mail.subject}\n\n${mail.body}`);
+
+        storage.set('pendingStatusMail', {
+            claimantId: String(mail.customer.tornId || ''),
+            subject: mail.subject,
+            body: mail.body,
+            createdAt: Date.now()
+        });
+
+        try {
+            await openFreshTornMailComposer(mail.customer.tornId);
+            setTimeout(tryFillManagerStatusMail, 900);
+        } catch (e) {
+            storage.set('pendingStatusMail', null);
+            alert(`Could not open Torn Mail.\n\n${e.message}\n\nThe policy update has been copied to your clipboard.`);
+        }
+    }
+
     function renderPolicies(body) {
         body.innerHTML = `
         <div class="hji-toolbar"><button class="hji-btn good" id="hji-add-policy">+ Add policy</button></div>
         <div class="hji-help">
           <strong>Policy lifecycle</strong>
           <p>Monthly/time-based cover stays as one policy. Use <b>Renew</b> to extend it and record the renewal payment. A single-jump policy automatically becomes <b>Paid out</b> when its linked claim is marked Paid.</p>
-          <p><span class="hji-active">Green = active</span> · <span class="hji-due">Amber = due soon</span> · <span class="hji-expired">Red = expired</span> · Grey = cancelled/used.</p>
+          <p><span class="hji-active">Green = active</span> · <span class="hji-due">Amber = due soon</span> · <span class="hji-expired">Red = expired</span> · Grey = cancelled/used/paid out.</p><p>After changing a policy, use <b>Notify</b> to send a structured Torn Mail update that the Client can sync.</p>
         </div>
         <div class="hji-table-wrap"><table class="hji-table"><thead><tr><th>Customer</th><th>Tier</th><th>Started</th><th>Ends / Use</th><th>Status</th><th></th></tr></thead><tbody>
         ${state.policies.map(p=>{
@@ -798,6 +864,7 @@
               <td><div class="hji-toolbar" style="margin:0">
                 ${canRenew?`<button class="hji-btn good" data-renew-policy="${p.id}">Renew</button>`:''}
                 <button class="hji-btn" data-setup-policy="${p.id}">Client setup</button>
+                <button class="hji-btn" data-notify-policy="${p.id}">Notify</button>
                 <button class="hji-btn" data-edit-policy="${p.id}">Edit</button>
               </div></td>
             </tr>`;
@@ -807,6 +874,7 @@
         body.querySelector('#hji-add-policy').onclick=()=>policyModal();
         body.querySelectorAll('[data-edit-policy]').forEach(b=>b.onclick=()=>policyModal(getPolicy(b.dataset.editPolicy)));
         body.querySelectorAll('[data-setup-policy]').forEach(b=>b.onclick=()=>setupCodeModal(getPolicy(b.dataset.setupPolicy)));
+        body.querySelectorAll('[data-notify-policy]').forEach(b=>b.onclick=()=>preparePolicyStatusMail(getPolicy(b.dataset.notifyPolicy)));
         body.querySelectorAll('[data-renew-policy]').forEach(b=>b.onclick=()=>renewPolicyModal(getPolicy(b.dataset.renewPolicy)));
     }
 
