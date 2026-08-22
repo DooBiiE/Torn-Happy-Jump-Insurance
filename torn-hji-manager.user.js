@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.3.9
+// @version      0.4.0
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.3.9';
+    const VERSION = '0.4.0';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const API_BASE = 'https://api.torn.com/v2';
@@ -838,10 +838,10 @@
         <div class="hji-toolbar"><button class="hji-btn good" id="hji-add-payment">+ Record payment</button></div>
         <div class="hji-help">
           <strong>Payment linking</strong>
-          <p>Payments can be linked to a specific policy. Renewal payments are linked automatically; manual payments can be linked when you record them.</p>
+          <p>Payments can be linked to a specific policy. Renewal payments are linked automatically. Saved payments can be edited later if anything was entered incorrectly.</p>
         </div>
         <div class="hji-table-wrap"><table class="hji-table">
-          <thead><tr><th>Date</th><th>Customer</th><th>Policy</th><th>Method</th><th>Amount</th><th>Notes</th></tr></thead>
+          <thead><tr><th>Date</th><th>Customer</th><th>Policy</th><th>Method</th><th>Amount</th><th>Notes</th><th></th></tr></thead>
           <tbody>
           ${[...state.payments].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(p=>{
               const c=getCustomer(p.customerId);
@@ -855,26 +855,64 @@
                 <td>${esc(p.method)}</td>
                 <td>${p.method==='cash'?'$'+money(p.amount):`${esc(p.itemQty)} × ${esc(p.itemName)}`}</td>
                 <td>${esc(p.notes||'')}</td>
+                <td><button class="hji-btn" data-edit-payment="${p.id}">Edit</button></td>
               </tr>`;
-          }).join('')||'<tr><td colspan="6">No payments recorded.</td></tr>'}
+          }).join('')||'<tr><td colspan="7">No payments recorded.</td></tr>'}
           </tbody>
         </table></div>`;
+
         body.querySelector('#hji-add-payment').onclick=()=>paymentModal();
+        body.querySelectorAll('[data-edit-payment]').forEach(b=>{
+            b.onclick=()=>paymentModal(state.payments.find(p=>p.id===b.dataset.editPayment));
+        });
     }
 
-    function paymentModal(){
+    function paymentModal(existing=null){
         if(!state.customers.length)return alert('Add a customer first.');
 
-        const modal=createModal('Record payment');
+        const modal=createModal(existing ? 'Edit payment' : 'Record payment');
+
+        const paymentDate = existing?.date
+            ? new Date(existing.date).toISOString().slice(0,10)
+            : new Date().toISOString().slice(0,10);
+
         modal.content.innerHTML+=`<div class="hji-form">
-          <label>Customer<select id="pay-c">${state.customers.map(c=>`<option value="${c.id}">${esc(c.name)} [${esc(c.tornId)}]</option>`).join('')}</select></label>
-          <label>Policy<select id="pay-policy"></select></label>
-          <label>Date<input type="date" id="pay-date" value="${new Date().toISOString().slice(0,10)}"></label>
-          <label>Method<select id="pay-method"><option value="cash">Cash</option><option value="item">Item</option></select></label>
-          <label>Cash amount<input id="pay-amount" inputmode="numeric" value="0"></label>
-          <label>Item name<input id="pay-item" value=""></label>
-          <label>Item quantity<input id="pay-qty" inputmode="numeric" value="0"></label>
-          <label class="wide">Notes<textarea id="pay-notes"></textarea></label>
+          <label>Customer
+            <select id="pay-c">
+              ${state.customers.map(c=>`<option value="${c.id}" ${existing?.customerId===c.id?'selected':''}>${esc(c.name)} [${esc(c.tornId)}]</option>`).join('')}
+            </select>
+          </label>
+
+          <label>Policy
+            <select id="pay-policy"></select>
+          </label>
+
+          <label>Date
+            <input type="date" id="pay-date" value="${paymentDate}">
+          </label>
+
+          <label>Method
+            <select id="pay-method">
+              <option value="cash" ${existing?.method==='cash' || !existing ? 'selected' : ''}>Cash</option>
+              <option value="item" ${existing?.method==='item' ? 'selected' : ''}>Item</option>
+            </select>
+          </label>
+
+          <label>Cash amount
+            <input id="pay-amount" inputmode="numeric" value="${Number(existing?.amount||0)}">
+          </label>
+
+          <label>Item name
+            <input id="pay-item" value="${esc(existing?.itemName||'')}">
+          </label>
+
+          <label>Item quantity
+            <input id="pay-qty" inputmode="numeric" value="${Number(existing?.itemQty||0)}">
+          </label>
+
+          <label class="wide">Notes
+            <textarea id="pay-notes">${esc(existing?.notes||'')}</textarea>
+          </label>
         </div>`;
 
         const customerSelect=modal.el.querySelector('#pay-c');
@@ -884,7 +922,7 @@
         const itemInput=modal.el.querySelector('#pay-item');
         const qtyInput=modal.el.querySelector('#pay-qty');
 
-        function refreshPolicies(){
+        function refreshPolicies(useExisting=true){
             const policies=state.policies.filter(p=>p.customerId===customerSelect.value);
             policySelect.innerHTML=
                 `<option value="">No policy / general payment</option>`+
@@ -892,9 +930,11 @@
                     const t=getTier(p.tierId);
                     const st=policyStatus(p)[0];
                     const suffix=p.type==='monthly'&&p.endDate?` · ends ${dateOnly(p.endDate)}`:'';
-                    return `<option value="${p.id}">${esc(t?.name||p.tierName||'Policy')} · ${esc(st)}${esc(suffix)}</option>`;
+                    const selected = useExisting && existing?.policyId===p.id ? 'selected' : '';
+                    return `<option value="${p.id}" ${selected}>${esc(t?.name||p.tierName||'Policy')} · ${esc(st)}${esc(suffix)}</option>`;
                 }).join('');
-            applyPolicyDefaults();
+
+            if (!existing || !useExisting) applyPolicyDefaults();
         }
 
         function applyPolicyDefaults(){
@@ -902,6 +942,7 @@
             if(!policy)return;
             const tier=getTier(policy.tierId);
             if(!tier)return;
+
             amountInput.value=Number(tier.cashPrice||0);
             itemInput.value=tier.itemName||'';
             qtyInput.value=Number(tier.itemQty||0);
@@ -914,26 +955,53 @@
             qtyInput.closest('label').style.opacity=itemMode?'1':'.55';
         }
 
-        customerSelect.onchange=refreshPolicies;
+        customerSelect.onchange=()=>refreshPolicies(false);
         policySelect.onchange=applyPolicyDefaults;
         methodSelect.onchange=updateMethodVisibility;
-        refreshPolicies();
+
+        refreshPolicies(true);
         updateMethodVisibility();
 
+        if(existing){
+            modal.actions.insertAdjacentHTML(
+                'afterbegin',
+                '<button class="hji-btn danger" id="pay-delete">Delete payment</button>'
+            );
+
+            modal.el.querySelector('#pay-delete').onclick=()=>{
+                if(!confirm('Delete this payment record?'))return;
+                state.payments=state.payments.filter(p=>p.id!==existing.id);
+                saveAll();
+                modal.close();
+                renderTab();
+            };
+        }
+
+        modal.el.querySelector('[data-save]').textContent = existing ? 'Save changes' : 'Save';
+
         modal.addSave(()=>{
-            const method=methodSelect.value;
-            state.payments.push({
-                id:uid('payment'),
+            const data={
                 customerId:customerSelect.value,
                 policyId:policySelect.value||null,
                 date:new Date(modal.el.querySelector('#pay-date').value+'T00:00:00').toISOString(),
-                method,
+                method:methodSelect.value,
                 amount:Number(amountInput.value||0),
                 itemName:itemInput.value.trim(),
                 itemQty:Number(qtyInput.value||0),
                 notes:modal.el.querySelector('#pay-notes').value.trim(),
-                createdAt:nowISO()
-            });
+                updatedAt:nowISO()
+            };
+
+            if(existing){
+                Object.assign(existing,data);
+            }else{
+                state.payments.push({
+                    id:uid('payment'),
+                    ...data,
+                    createdAt:nowISO()
+                });
+            }
+
             saveAll();
             modal.close();
             renderTab();
@@ -942,7 +1010,7 @@
 
     function renderClaims(body) {
         body.innerHTML=`<div class="hji-toolbar"><button class="hji-btn good" id="hji-scan-mail">↻ Scan Torn Mail</button><button class="hji-btn" id="hji-add-claim">+ Manual claim</button></div>
-        <div class="hji-muted" style="margin-bottom:8px">Last scan: ${state.settings.lastMailScan?new Date(state.settings.lastMailScan).toLocaleString('en-GB'):'Never'}. Imported claims are matched by claimant Torn ID where possible.</div>
+        <div class="hji-muted" style="margin-bottom:8px">Last scan: ${state.settings.lastMailScan?new Date(state.settings.lastMailScan).toLocaleString('en-GB'):'Never'}. Claims are detected from the HJI Torn Mail topic and matched by sender Torn ID where possible. Open the Torn Mail message to review the full claim body.</div>
         <table class="hji-table"><thead><tr><th>Reference</th><th>Claimant</th><th>Submitted</th><th>Tier / Policy</th><th>Status</th><th></th></tr></thead><tbody>
         ${[...state.claims].sort((a,b)=>new Date(b.submittedAt)-new Date(a.submittedAt)).map(c=>`<tr><td>${esc(c.reference)}</td><td>${esc(c.claimantName||'')} [${esc(c.claimantId||'')}]</td><td>${dateOnly(c.submittedAt)}</td><td>${esc(c.tierName||'')}</td><td class="hji-status ${c.status==='submitted'?'hji-pending':c.status==='approved'?'hji-active':c.status==='rejected'?'hji-expired':''}">${esc(c.status)}</td><td><button class="hji-btn" data-view-claim="${c.id}">View</button></td></tr>`).join('')||'<tr><td colspan="6">No claims yet.</td></tr>'}
         </tbody></table>`;
@@ -1523,68 +1591,200 @@
         });
     }
 
-    function walkMessages(obj, out=[]) {
-        if (!obj || typeof obj!=='object') return out;
-        if (Array.isArray(obj)) { obj.forEach(v=>walkMessages(v,out)); return out; }
-        const keys=Object.keys(obj);
-        const hasText=keys.some(k=>/message|body|text/i.test(k));
-        const hasTitle=keys.some(k=>/title|subject/i.test(k));
-        if (hasText || hasTitle) out.push(obj);
-        Object.values(obj).forEach(v=>{if(v&&typeof v==='object')walkMessages(v,out)});
-        return out;
+    function getMessageArray(data) {
+        if (!data || typeof data !== 'object') return [];
+
+        // Current API v2 shape: { messages: [...] }
+        if (Array.isArray(data.messages)) return data.messages;
+
+        // Tolerate nested/legacy shapes without assuming one exact historical format.
+        const found=[];
+        const walk=obj=>{
+            if(!obj || typeof obj!=='object')return;
+            if(Array.isArray(obj)){
+                obj.forEach(walk);
+                return;
+            }
+
+            const looksLikeMessage =
+                ('topic' in obj || 'title' in obj || 'subject' in obj) &&
+                ('timestamp' in obj || 'sender' in obj || 'sender_id' in obj);
+
+            if(looksLikeMessage) found.push(obj);
+
+            Object.values(obj).forEach(v=>{
+                if(v && typeof v==='object') walk(v);
+            });
+        };
+        walk(data);
+        return found;
     }
 
-    function pick(obj, patterns) {
-        for (const [k,v] of Object.entries(obj||{})) if (patterns.some(rx=>rx.test(k)) && (typeof v==='string'||typeof v==='number')) return v;
-        return '';
+    function messageTopic(m) {
+        return String(
+            m?.topic ??
+            m?.subject ??
+            m?.title ??
+            ''
+        ).trim();
     }
 
-    function parseClaimText(subject, body, raw) {
-        const all=`${subject}\n${body}`;
-        if (!all.includes(CLAIM_PREFIX) && !/HJI-[A-Z0-9_-]+/i.test(all)) return null;
-        const find=(label)=>{const m=all.match(new RegExp(`^${label}\\s*:\\s*(.+)$`,'im'));return m?m[1].trim():''};
-        const ref=(all.match(/HJI-[A-Z0-9_-]+/i)||[])[0] || find('Claim Reference') || uid('HJI').toUpperCase();
+    function messageSender(m) {
+        const senderObj = m?.sender && typeof m.sender==='object' ? m.sender : null;
+
+        const id =
+            senderObj?.id ??
+            senderObj?.player_id ??
+            senderObj?.user_id ??
+            m?.sender_id ??
+            m?.user_id ??
+            '';
+
+        const name =
+            senderObj?.name ??
+            senderObj?.username ??
+            m?.sender_name ??
+            m?.name ??
+            '';
+
         return {
-            reference:ref,
-            claimantId:find('Claimant ID') || String(pick(raw,[/sender.*id/i,/user.*id/i,/player.*id/i,/from.*id/i])||''),
-            claimantName:find('Claimant Name') || String(pick(raw,[/sender.*name/i,/user.*name/i,/player.*name/i,/from.*name/i])||''),
-            tierName:find('Tier') || find('Policy'),
-            details:body || all,
-            submittedAt: (()=>{const ts=pick(raw,[/timestamp/i,/date/i,/time/i]);if(typeof ts==='number')return new Date(ts*1000).toISOString();return nowISO();})(),
+            id: String(id ?? ''),
+            name: String(name ?? '')
+        };
+    }
+
+    function messageTimestamp(m) {
+        const ts=Number(m?.timestamp || 0);
+        return Number.isFinite(ts) && ts>0
+            ? new Date(ts*1000).toISOString()
+            : nowISO();
+    }
+
+    function parseClaimMessage(m) {
+        const topic=messageTopic(m);
+
+        // HJI Client puts both the marker and the unique reference in the Torn Mail topic.
+        if(!topic.includes(CLAIM_PREFIX) && !/HJI-[A-Z0-9_-]+/i.test(topic)) return null;
+
+        const reference=(topic.match(/HJI-[A-Z0-9_-]+/i)||[])[0];
+        if(!reference) return null;
+
+        const sender=messageSender(m);
+
+        return {
+            reference,
+            claimantId:sender.id,
+            claimantName:sender.name,
+            tierName:'',
+            details:'Claim detected from Torn Mail. Torn API v2 exposes the message topic and sender, but not the full mail body; open the Torn message to review the submitted claim details.',
+            submittedAt:messageTimestamp(m),
             status:'submitted',
             source:'torn-mail',
-            rawBody:body
+            mailMessageId:String(m?.id ?? ''),
+            mailTopic:topic,
+            mailSeen:Boolean(m?.seen),
+            mailRead:Boolean(m?.read)
         };
     }
 
     async function scanMail() {
-        const btn=overlay.querySelector('#hji-scan-mail');
-        if (!state.settings.apiKey) return alert('Add the provider Torn API key in Settings first.');
-        if (btn) {btn.disabled=true;btn.textContent='Scanning…';}
+        const btn=overlay?.querySelector('#hji-scan-mail');
+
+        if (!state.settings.apiKey) {
+            return alert('Add the provider Torn API key in Settings first.');
+        }
+
+        if (btn) {
+            btn.disabled=true;
+            btn.textContent='Scanning…';
+        }
+
         try {
-            let data;
-            try {
-                data=await requestApi(`${API_BASE}/user/newmessages`,state.settings.apiKey);
-            } catch {
-                data=await requestApi(`${API_BASE}/user/messages?limit=100`,state.settings.apiKey);
+            // Always scan the full inbox. A claim may already be seen/read, in which
+            // case /newmessages can legitimately return an empty list.
+            const data=await requestApi(
+                `${API_BASE}/user/messages?limit=100&sort=DESC`,
+                state.settings.apiKey
+            );
+
+            if (data?.error) {
+                throw new Error(
+                    data.error.error ||
+                    data.error.message ||
+                    JSON.stringify(data.error)
+                );
             }
-            if (data?.error) throw new Error(data.error.error || data.error.message || JSON.stringify(data.error));
-            const objs=walkMessages(data);
+
+            const messages=getMessageArray(data);
+
+            let hjiFound=0;
             let added=0;
-            for(const m of objs){
-                const subject=String(pick(m,[/subject/i,/title/i])||'');
-                const body=String(pick(m,[/^message$/i,/body/i,/text/i,/content/i])||'');
-                const c=parseClaimText(subject,body,m);
+            let duplicates=0;
+
+            for(const m of messages){
+                const c=parseClaimMessage(m);
                 if(!c)continue;
-                if(state.claims.some(x=>x.reference===c.reference))continue;
+
+                hjiFound++;
+
+                if(state.claims.some(x=>x.reference===c.reference)){
+                    duplicates++;
+                    continue;
+                }
+
                 c.id=uid('claim');
-                const customer=state.customers.find(x=>String(x.tornId)===String(c.claimantId));
-                if(customer){c.customerId=customer.id;if(!c.claimantName)c.claimantName=customer.name;const p=state.policies.find(p=>p.customerId===customer.id && policyStatus(p)[0]!=='Expired' && p.status!=='cancelled');if(p){c.policyId=p.id;c.tierName=c.tierName||getTier(p.tierId)?.name||p.tierName;}}
-                state.claims.push(c); added++;
+
+                const customer=state.customers.find(
+                    x=>String(x.tornId)===String(c.claimantId)
+                );
+
+                if(customer){
+                    c.customerId=customer.id;
+
+                    if(!c.claimantName) c.claimantName=customer.name;
+
+                    const activePolicies=state.policies.filter(
+                        p=>p.customerId===customer.id &&
+                           p.status!=='cancelled' &&
+                           !['Expired','Used'].includes(policyStatus(p)[0])
+                    );
+
+                    if(activePolicies.length===1){
+                        const p=activePolicies[0];
+                        c.policyId=p.id;
+                        c.tierName=getTier(p.tierId)?.name || p.tierName || '';
+                    }
+                }
+
+                state.claims.push(c);
+                added++;
             }
-            state.settings.lastMailScan=nowISO();saveAll();alert(`Mail scan complete. ${added} new claim${added===1?'':'s'} imported.`);renderTab();renderTabs();
-        } catch(e) { alert(`Could not scan Torn Mail.\n\n${e.message}\n\nCheck the API key has access to your messages.`); }
-        finally { if(btn){btn.disabled=false;btn.textContent='↻ Scan Torn Mail';} }
+
+            state.settings.lastMailScan=nowISO();
+            saveAll();
+
+            alert(
+                `Mail scan complete.\n\n` +
+                `${messages.length} inbox message${messages.length===1?'':'s'} checked\n` +
+                `${hjiFound} HJI claim topic${hjiFound===1?'':'s'} found\n` +
+                `${added} new claim${added===1?'':'s'} imported` +
+                (duplicates ? `\n${duplicates} already imported` : '')
+            );
+
+            renderTab();
+            renderTabs();
+
+        } catch(e) {
+            alert(
+                `Could not scan Torn Mail.\n\n${e.message}\n\n` +
+                `The Manager needs access to user/messages.`
+            );
+        } finally {
+            if(btn){
+                btn.disabled=false;
+                btn.textContent='↻ Scan Torn Mail';
+            }
+        }
     }
 
     function addLauncher(){
