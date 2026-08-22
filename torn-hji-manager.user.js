@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.10
+// @version      0.4.11
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.10';
+    const VERSION = '0.4.11';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -1167,16 +1167,99 @@
         }
     }
 
+
+    function claimPayoutCashTotal() {
+        return normalizeCollection(state.claims, 'claims')
+            .filter(c => c?.status === 'paid' && c?.payoutMethod === 'cash')
+            .reduce((sum, c) => sum + Number(c.payoutAmount || 0), 0);
+    }
+
+    function claimPayoutItemTotals() {
+        const totals = new Map();
+
+        for (const c of normalizeCollection(state.claims, 'claims')) {
+            if (c?.status !== 'paid' || c?.payoutMethod !== 'item') continue;
+
+            const name = String(c.payoutItemName || '').trim() || 'Unnamed item';
+            const qty = Number(c.payoutItemQty || 0);
+
+            totals.set(name, (totals.get(name) || 0) + qty);
+        }
+
+        return [...totals.entries()]
+            .map(([name, qty]) => ({name, qty}))
+            .sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name));
+    }
+
+    function claimPayoutItemSummaryHtml() {
+        const items = claimPayoutItemTotals();
+
+        if (!items.length) {
+            return '<div class="hji-muted">No item claim payouts recorded yet.</div>';
+        }
+
+        return items.map(item =>
+            `<div class="hji-field" style="margin-bottom:6px"><strong>${esc(item.qty)}x ${esc(item.name)}</strong></div>`
+        ).join('');
+    }
+
+    function itemNetPosition() {
+        const map = new Map();
+
+        for (const p of normalizeCollection(state.payments, 'payments')) {
+            if (p?.method !== 'item') continue;
+            const name = String(p.itemName || '').trim() || 'Unnamed item';
+            const current = map.get(name) || {name, received:0, paidOut:0};
+            current.received += Number(p.itemQty || 0);
+            map.set(name, current);
+        }
+
+        for (const c of normalizeCollection(state.claims, 'claims')) {
+            if (c?.status !== 'paid' || c?.payoutMethod !== 'item') continue;
+            const name = String(c.payoutItemName || '').trim() || 'Unnamed item';
+            const current = map.get(name) || {name, received:0, paidOut:0};
+            current.paidOut += Number(c.payoutItemQty || 0);
+            map.set(name, current);
+        }
+
+        return [...map.values()]
+            .map(x => ({...x, net:x.received - x.paidOut}))
+            .sort((a,b) => Math.abs(b.net) - Math.abs(a.net) || a.name.localeCompare(b.name));
+    }
+
+    function itemNetSummaryHtml() {
+        const items = itemNetPosition();
+
+        if (!items.length) {
+            return '<div class="hji-muted">No item income or payouts recorded yet.</div>';
+        }
+
+        return items.map(item => {
+            const sign = item.net > 0 ? '+' : '';
+            return `<div class="hji-field" style="margin-bottom:6px">
+              <strong>${esc(item.name)}: ${sign}${esc(item.net)}</strong>
+              <div class="hji-muted">${esc(item.received)} received · ${esc(item.paidOut)} paid out</div>
+            </div>`;
+        }).join('');
+    }
+
     function renderDashboard(body) {
         const activePolicies = state.policies.filter(p=>policyStatus(p)[0]==='Active').length;
         const dueSoon = state.policies.filter(p=>policyStatus(p)[0]==='Due soon').length;
         const openClaims = state.claims.filter(c=>!['rejected','closed','paid'].includes(c.status)).length;
+
         const cashReceived = state.payments
             .filter(p=>p.method==='cash')
             .reduce((sum,p)=>sum+Number(p.amount||0),0);
 
+        const cashPaidOut = claimPayoutCashTotal();
+        const netCash = cashReceived - cashPaidOut;
+
         const itemTotals = itemPaymentTotals();
         const totalItemUnits = itemTotals.reduce((sum,item)=>sum+Number(item.qty||0),0);
+
+        const payoutItemTotals = claimPayoutItemTotals();
+        const totalPayoutItemUnits = payoutItemTotals.reduce((sum,item)=>sum+Number(item.qty||0),0);
 
         const lastItemScan = state.settings.lastItemLogScan
             ? new Date(state.settings.lastItemLogScan).toLocaleString('en-GB')
@@ -1201,15 +1284,27 @@
           </div>
 
           <div class="hji-help">
-            <strong>Payment totals</strong>
-            <p>Cash and item totals shown below are calculated from <b>all recorded payments</b>, not just the last 30 days.</p>
+            <strong>Financial overview</strong>
+            <p>Figures below are <b>all-time</b> from the locally recorded Manager data.</p>
+            <p>Cash profit/loss can be calculated directly. Items are shown separately by item because HJI does not assume an in-game cash value for them.</p>
           </div>
 
           <div class="hji-grid" style="margin-top:10px">
             <div class="hji-card">
-              <strong>Cash payments received <span class="hji-muted">(all-time)</span></strong>
+              <strong>Cash received <span class="hji-muted">(all-time)</span></strong>
               <b>$${money(cashReceived)}</b>
               <div class="hji-muted">${state.payments.filter(p=>p.method==='cash').length} cash payment${state.payments.filter(p=>p.method==='cash').length===1?'':'s'}</div>
+            </div>
+
+            <div class="hji-card">
+              <strong>Cash claim payouts <span class="hji-muted">(all-time)</span></strong>
+              <b>$${money(cashPaidOut)}</b>
+            </div>
+
+            <div class="hji-card">
+              <strong>Net cash <span class="hji-muted">(all-time)</span></strong>
+              <b class="${netCash>0?'hji-active':netCash<0?'hji-expired':'hji-due'}">${netCash<0?'−':''}$${money(Math.abs(netCash))}</b>
+              <div class="hji-muted">${netCash>0?'Profit':netCash<0?'Loss':'Break even'}</div>
             </div>
 
             <div class="hji-card">
@@ -1217,12 +1312,27 @@
               <b>${totalItemUnits}</b>
               <div class="hji-muted">${state.payments.filter(p=>p.method==='item').length} item payment${state.payments.filter(p=>p.method==='item').length===1?'':'s'}</div>
             </div>
+
+            <div class="hji-card">
+              <strong>Item claim payouts <span class="hji-muted">(all-time)</span></strong>
+              <b>${totalPayoutItemUnits}</b>
+            </div>
           </div>
 
-          <div class="hji-card" style="margin-top:10px">
-            <strong>Item payment breakdown <span class="hji-muted">(all-time)</span></strong>
-            <div style="margin-top:8px">
-              ${itemPaymentSummaryHtml()}
+          <div class="hji-grid" style="margin-top:10px">
+            <div class="hji-card">
+              <strong>Item income breakdown <span class="hji-muted">(all-time)</span></strong>
+              <div style="margin-top:8px">${itemPaymentSummaryHtml()}</div>
+            </div>
+
+            <div class="hji-card">
+              <strong>Item payout breakdown <span class="hji-muted">(all-time)</span></strong>
+              <div style="margin-top:8px">${claimPayoutItemSummaryHtml()}</div>
+            </div>
+
+            <div class="hji-card">
+              <strong>Net item position <span class="hji-muted">(all-time)</span></strong>
+              <div style="margin-top:8px">${itemNetSummaryHtml()}</div>
             </div>
           </div>
 
@@ -1234,7 +1344,7 @@
 
           <div class="hji-card">
             <strong>Quick notes</strong>
-            <p>Use Policies for cover status and renewals, Payments for cash/item records, and Claims for payout handling and Torn Mail sync.</p>
+            <p>Use Policies for cover status and renewals, Payments for cash/item income, and Claims for payout handling and Torn Mail sync.</p>
           </div>`;
 
         body.querySelector('#hji-scan-items').onclick=scanItemPayments;
@@ -1775,7 +1885,7 @@
         </div>
 
         <div class="hji-table-wrap"><table class="hji-table">
-          <thead><tr><th>Reference</th><th>Claimant</th><th>Submitted</th><th>Tier / Policy</th><th>Status</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Reference</th><th>Claimant</th><th>Submitted</th><th>Tier / Policy</th><th>Status</th><th>Payout</th><th>Actions</th></tr></thead>
           <tbody>
           ${[...state.claims].sort((a,b)=>new Date(b.submittedAt)-new Date(a.submittedAt)).map(c=>`
             <tr>
@@ -1786,6 +1896,13 @@
               <td class="hji-status ${c.status==='submitted'?'hji-pending':c.status==='approved'||c.status==='paid'?'hji-active':c.status==='rejected'?'hji-expired':''}">
                 ${esc(claimStatusLabel(c.status))}
               </td>
+              <td>${
+                c.payoutMethod==='cash'
+                    ? '$'+money(c.payoutAmount||0)
+                    : c.payoutMethod==='item'
+                        ? `${esc(c.payoutItemQty||0)}x ${esc(c.payoutItemName||'')}`
+                        : '—'
+              }</td>
               <td>
                 <div class="hji-toolbar" style="margin:0">
                   <button class="hji-btn" data-view-claim="${c.id}">View</button>
@@ -1794,7 +1911,7 @@
                   <button class="hji-btn" data-notify-claim="${c.id}">Notify</button>
                 </div>
               </td>
-            </tr>`).join('')||'<tr><td colspan="6">No claims yet.</td></tr>'}
+            </tr>`).join('')||'<tr><td colspan="7">No claims yet.</td></tr>'}
           </tbody>
         </table></div>`;
 
@@ -1856,6 +1973,13 @@
           <p><strong>Tier:</strong> ${esc(c.tierName||'—')}</p>
           <p><strong>Submitted:</strong> ${esc(new Date(c.submittedAt).toLocaleString('en-GB'))}</p>
           <p><strong>Source:</strong> ${esc(c.source||'')}</p>
+          <p><strong>Payout:</strong> ${
+              c.payoutMethod==='cash'
+                  ? '$'+money(c.payoutAmount||0)
+                  : c.payoutMethod==='item'
+                      ? `${esc(c.payoutItemQty||0)}x ${esc(c.payoutItemName||'')}`
+                      : 'Not recorded'
+          }</p>
           <p><strong>Storage:</strong> <span class="hji-active">Stored locally in HJI</span></p>
           <p><strong>Details</strong></p>
           <pre style="white-space:pre-wrap">${esc(c.details||c.rawBody||'')}</pre>
@@ -1875,7 +1999,43 @@
           <label>Provider note
             <input id="cl-note" value="${esc(c.providerNote||'')}">
           </label>
+
+          <label>Payout method
+            <select id="cl-payout-method">
+              <option value="" ${!c.payoutMethod?'selected':''}>Not recorded</option>
+              <option value="cash" ${c.payoutMethod==='cash'?'selected':''}>Cash</option>
+              <option value="item" ${c.payoutMethod==='item'?'selected':''}>Item</option>
+            </select>
+          </label>
+
+          <label>Cash payout
+            <input id="cl-payout-amount" inputmode="decimal" value="${formatMoneyInput(c.payoutAmount||0)}">
+          </label>
+
+          <label>Item payout
+            <input id="cl-payout-item" value="${esc(c.payoutItemName||'')}" placeholder="e.g. Xanax">
+          </label>
+
+          <label>Item quantity
+            <input id="cl-payout-qty" inputmode="numeric" value="${Number(c.payoutItemQty||0)}">
+          </label>
         </div>`;
+
+        bindMoneyInput(modal.el.querySelector('#cl-payout-amount'));
+
+        const payoutMethodSelect=modal.el.querySelector('#cl-payout-method');
+        const payoutAmountInput=modal.el.querySelector('#cl-payout-amount');
+        const payoutItemInput=modal.el.querySelector('#cl-payout-item');
+        const payoutQtyInput=modal.el.querySelector('#cl-payout-qty');
+
+        function updatePayoutInputs(){
+            const method=payoutMethodSelect.value;
+            payoutAmountInput.closest('label').style.opacity=method==='cash'?'1':'.55';
+            payoutItemInput.closest('label').style.opacity=method==='item'?'1':'.55';
+            payoutQtyInput.closest('label').style.opacity=method==='item'?'1':'.55';
+        }
+        payoutMethodSelect.onchange=updatePayoutInputs;
+        updatePayoutInputs();
 
         modal.el.querySelector('#claim-open-mail').onclick=()=>openClaimMail(c);
         modal.el.querySelector('#claim-open-trade').onclick=()=>openClaimTrade(c);
@@ -1886,8 +2046,30 @@
         );
 
         const saveClaim=()=>{
-            c.status=modal.el.querySelector('#cl-status').value;
+            const nextStatus=modal.el.querySelector('#cl-status').value;
+            const nextPayoutMethod=payoutMethodSelect.value;
+
+            if(nextStatus==='paid'){
+                if(!nextPayoutMethod){
+                    alert('Record the payout method before marking this claim Paid.');
+                    return false;
+                }
+                if(nextPayoutMethod==='cash' && parseMoneyInput(payoutAmountInput.value)<=0){
+                    alert('Enter the cash payout amount before marking this claim Paid.');
+                    return false;
+                }
+                if(nextPayoutMethod==='item' && (!payoutItemInput.value.trim() || Number(payoutQtyInput.value||0)<=0)){
+                    alert('Enter the payout item and quantity before marking this claim Paid.');
+                    return false;
+                }
+            }
+
+            c.status=nextStatus;
             c.providerNote=modal.el.querySelector('#cl-note').value.trim();
+            c.payoutMethod=payoutMethodSelect.value;
+            c.payoutAmount=c.payoutMethod==='cash' ? parseMoneyInput(payoutAmountInput.value) : 0;
+            c.payoutItemName=c.payoutMethod==='item' ? payoutItemInput.value.trim() : '';
+            c.payoutItemQty=c.payoutMethod==='item' ? Number(payoutQtyInput.value||0) : 0;
             c.updatedAt=nowISO();
 
             const policyWasPaidOut = applyClaimPayoutToPolicy(c);
@@ -1897,17 +2079,18 @@
             if (policyWasPaidOut) {
                 console.info(`[HJI Manager] Single-jump policy ${c.policyId} marked Paid out by claim ${c.reference}.`);
             }
+            return true;
         };
 
         modal.addSave(()=>{
-            saveClaim();
+            if(saveClaim()===false)return;
             modal.close();
             renderTab();
             renderTabs();
         });
 
         modal.el.querySelector('#claim-save-notify').onclick=async()=>{
-            saveClaim();
+            if(saveClaim()===false)return;
             const status=c.status;
             const note=c.providerNote;
             modal.close();
