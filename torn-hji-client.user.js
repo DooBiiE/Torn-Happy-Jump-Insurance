@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Client
 // @namespace    torn-hji
-// @version      0.3.6
+// @version      0.3.7
 // @description  Insured-user client for importing Happy Jump policies and preparing structured Torn Mail claims.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -18,7 +18,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.3.6';
+    const VERSION = '0.3.7';
     const PREFIX='torn_hji_client_v2_';
     const LEGACY_PREFIX='torn_hji_client_v1_';
     const CLAIM_PREFIX='[HJI CLAIM]';
@@ -441,27 +441,111 @@
         return ['Active','hc-policy-active','hc-status-active'];
     }
 
-    function detectCurrentTornUser(){
-        const selectors = [
-            'a[href*="profiles.php?XID="]',
-            'a[href*="/profiles.php?XID="]'
-        ];
-        for (const sel of selectors) {
-            for (const a of document.querySelectorAll(sel)) {
-                const href = String(a.getAttribute('href') || '');
-                const m = href.match(/XID=(\d+)/i);
-                const label = (a.textContent || '').trim();
-                if (!m || !label) continue;
-                const name = label.replace(/\s*\[\d+\]\s*$/, '').trim();
-                if (name && name.length < 40) return {id:m[1], name, source:'Torn page'};
+    function cleanDetectedUsername(value, tornId=''){
+        let name=String(value||'').trim();
+
+        if(!name) return '';
+
+        name=name
+            .replace(/\s+/g,' ')
+            .replace(new RegExp(`\\s*\\[${String(tornId).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}\\]\\s*$`),'')
+            .trim();
+
+        const generic=new Set([
+            'view profile',
+            'profile',
+            'my profile',
+            'open profile',
+            'view user',
+            'user profile'
+        ]);
+
+        if(generic.has(name.toLowerCase())) return '';
+        if(/^view\s+profile$/i.test(name)) return '';
+        if(name.length<2 || name.length>40) return '';
+
+        return name;
+    }
+
+    function findUsernameForTornId(tornId){
+        tornId=String(tornId||'').trim();
+        if(!/^\d+$/.test(tornId)) return '';
+
+        // Prefer explicit attributes attached to the matching profile link.
+        const links=[...document.querySelectorAll(`a[href*="profiles.php?XID=${tornId}"]`)];
+        for(const a of links){
+            const candidates=[
+                a.getAttribute('data-user-name'),
+                a.getAttribute('data-name'),
+                a.getAttribute('title'),
+                a.getAttribute('aria-label'),
+                a.textContent
+            ];
+
+            for(const candidate of candidates){
+                const name=cleanDetectedUsername(candidate,tornId);
+                if(name) return name;
+            }
+
+            // Torn often displays "Username [123456]" in a parent/sibling even when
+            // the clickable link itself only says "View Profile".
+            const nearby=[
+                a.parentElement?.textContent,
+                a.closest('li,div,section,header')?.textContent,
+                a.previousElementSibling?.textContent,
+                a.nextElementSibling?.textContent
+            ];
+
+            for(const block of nearby){
+                const text=String(block||'');
+                const match=text.match(new RegExp(`([A-Za-z0-9_-]{2,40})\\s*\\[${tornId}\\]`,'i'));
+                const name=cleanDetectedUsername(match?.[1],tornId);
+                if(name) return name;
             }
         }
-        for (const n of document.querySelectorAll('[data-user-id],[data-player-id],[data-userid]')) {
-            const id = n.getAttribute('data-user-id') || n.getAttribute('data-player-id') || n.getAttribute('data-userid');
-            if (!id || !/^\d+$/.test(id)) continue;
-            const name = (n.getAttribute('data-user-name') || n.getAttribute('data-name') || n.textContent || '').trim();
-            return {id, name:name.length < 40 ? name : '', source:'Torn page data'};
+
+        // Final fallback: search visible page text for the exact same Torn ID.
+        // Tying the match to the detected ID avoids using another player's profile name.
+        const pageText=String(document.body?.innerText||'');
+        const match=pageText.match(new RegExp(`([A-Za-z0-9_-]{2,40})\\s*\\[${tornId}\\]`,'i'));
+        return cleanDetectedUsername(match?.[1],tornId);
+    }
+
+    function detectCurrentTornUser(){
+        // First locate a plausible own-profile link / ID.
+        const profileLinks=[...document.querySelectorAll('a[href*="profiles.php?XID="]')];
+
+        for(const a of profileLinks){
+            const href=String(a.getAttribute('href')||'');
+            const m=href.match(/XID=(\d+)/i);
+            if(!m) continue;
+
+            const id=m[1];
+            const name=findUsernameForTornId(id);
+
+            // We can safely return the ID even if name was not found; importantly,
+            // never use generic UI labels such as "View Profile" as the username.
+            if(name) return {id,name,source:'Torn page'};
         }
+
+        // Torn/PDA may expose the logged-in account through data attributes instead.
+        for(const n of document.querySelectorAll('[data-user-id],[data-player-id],[data-userid]')){
+            const id=n.getAttribute('data-user-id') ||
+                     n.getAttribute('data-player-id') ||
+                     n.getAttribute('data-userid');
+
+            if(!id || !/^\d+$/.test(id)) continue;
+
+            const direct=
+                n.getAttribute('data-user-name') ||
+                n.getAttribute('data-name') ||
+                '';
+
+            const name=cleanDetectedUsername(direct,id) || findUsernameForTornId(id);
+
+            if(name) return {id,name,source:'Torn page data'};
+        }
+
         return null;
     }
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.1
+// @version      0.4.2
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.1';
+    const VERSION = '0.4.2';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -1310,15 +1310,39 @@
     }
 
 
+    function cleanDetectedUsername(value) {
+        const name=String(value||'').trim();
+        if(!name) return '';
+
+        const generic=new Set([
+            'view profile',
+            'profile',
+            'my profile',
+            'open profile',
+            'view user',
+            'user profile'
+        ]);
+
+        if(generic.has(name.toLowerCase())) return '';
+        if(/^view\s+profile$/i.test(name)) return '';
+        if(name.length<2 || name.length>40) return '';
+
+        return name;
+    }
+
     function extractProfileIdentity(data) {
         if (!data || typeof data !== 'object') return null;
 
         const candidates = [data, data.user, data.profile, data.basic, data.player].filter(Boolean);
+
         for (const obj of candidates) {
             if (!obj || typeof obj !== 'object') continue;
+
             const id = obj.player_id ?? obj.user_id ?? obj.id ?? obj.ID;
-            const name = obj.name ?? obj.username ?? obj.player_name;
-            if (id && name) return { id: String(id), name: String(name) };
+            const rawName = obj.name ?? obj.username ?? obj.player_name;
+            const name = cleanDetectedUsername(rawName);
+
+            if (id && name) return { id: String(id), name };
         }
 
         for (const value of Object.values(data)) {
@@ -1327,6 +1351,7 @@
                 if (found) return found;
             }
         }
+
         return null;
     }
 
