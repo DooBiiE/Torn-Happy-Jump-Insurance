@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.9
+// @version      0.4.10
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.9';
+    const VERSION = '0.4.10';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -818,7 +818,7 @@
         }
 
         return items.map(item =>
-            `<div class="hji-field" style="margin-bottom:6px"><small>${esc(item.name)}</small><strong>${esc(item.qty)}</strong></div>`
+            `<div class="hji-field" style="margin-bottom:6px"><strong>${esc(item.qty)}x ${esc(item.name)}</strong></div>`
         ).join('');
     }
 
@@ -1200,22 +1200,27 @@
             <div class="hji-card">Open claims<b>${openClaims}</b></div>
           </div>
 
+          <div class="hji-help">
+            <strong>Payment totals</strong>
+            <p>Cash and item totals shown below are calculated from <b>all recorded payments</b>, not just the last 30 days.</p>
+          </div>
+
           <div class="hji-grid" style="margin-top:10px">
             <div class="hji-card">
-              <strong>Cash payments received</strong>
+              <strong>Cash payments received <span class="hji-muted">(all-time)</span></strong>
               <b>$${money(cashReceived)}</b>
               <div class="hji-muted">${state.payments.filter(p=>p.method==='cash').length} cash payment${state.payments.filter(p=>p.method==='cash').length===1?'':'s'}</div>
             </div>
 
             <div class="hji-card">
-              <strong>Item payments received</strong>
+              <strong>Item payments received <span class="hji-muted">(all-time)</span></strong>
               <b>${totalItemUnits}</b>
               <div class="hji-muted">${state.payments.filter(p=>p.method==='item').length} item payment${state.payments.filter(p=>p.method==='item').length===1?'':'s'}</div>
             </div>
           </div>
 
           <div class="hji-card" style="margin-top:10px">
-            <strong>Item payment breakdown</strong>
+            <strong>Item payment breakdown <span class="hji-muted">(all-time)</span></strong>
             <div style="margin-top:8px">
               ${itemPaymentSummaryHtml()}
             </div>
