@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.17
+// @version      0.4.18
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.17';
+    const VERSION = '0.4.18';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -1065,6 +1065,70 @@
         return receipt;
     }
 
+    function activeTierPaymentItems() {
+        const items = [];
+        const seen = new Set();
+
+        for (const tier of normalizeCollection(state.tiers, 'tiers')) {
+            if (!tier || tier.active === false || Number(tier.itemQty || 0) <= 0) continue;
+
+            const itemId = String(tier.itemId || '').trim();
+            const itemName = String(tier.itemName || '').trim();
+
+            if (!itemId && !itemName) continue;
+
+            const key = itemId
+                ? `id:${itemId}`
+                : `name:${normalizeItemName(itemName)}`;
+
+            if (seen.has(key)) continue;
+            seen.add(key);
+
+            items.push({
+                itemId,
+                itemName,
+                tierId:tier.id,
+                tierName:tier.name
+            });
+        }
+
+        return items;
+    }
+
+    function receiptMatchesConfiguredItem(receipt) {
+        const configured = activeTierPaymentItems();
+        if (!configured.length) return false;
+
+        const receiptId = String(receipt?.itemId || '').trim();
+        const receiptName = normalizeItemName(receipt?.itemName || '');
+
+        return configured.some(item => {
+            if (item.itemId && receiptId) {
+                return String(item.itemId) === receiptId;
+            }
+
+            return Boolean(
+                item.itemName &&
+                receiptName &&
+                normalizeItemName(item.itemName) === receiptName
+            );
+        });
+    }
+
+    function itemScanFilterSummaryHtml() {
+        const items = activeTierPaymentItems();
+
+        if (!items.length) {
+            return '<span class="hji-expired">No active tier payment items configured</span>';
+        }
+
+        return items.map(item => {
+            const label = item.itemName || `Item ID ${item.itemId}`;
+            const id = item.itemId ? ` [ID ${item.itemId}]` : '';
+            return `<span class="hji-pill">${esc(label)}${esc(id)}</span>`;
+        }).join(' ');
+    }
+
     function tierMatchesReceipt(tier, receipt) {
         if (!tier || tier.active === false || Number(tier.itemQty || 0) <= 0) return false;
 
@@ -1396,6 +1460,17 @@
 
         const windowInfo=itemScanWindow(forceLookbackDays);
 
+        if(!activeTierPaymentItems().length){
+            if(btn){
+                btn.disabled=false;
+                btn.textContent='↻ Scan item payments';
+            }
+            return alert(
+                'No active tier payment items are configured.\n\n' +
+                'Add an Alternative item (and preferably its Torn Item ID) to at least one active tier before scanning.'
+            );
+        }
+
         try {
             // Query Torn's dedicated direct-item receipt log type (Item receive 4103)
             // for the complete time window, paging if more than 100 receipts exist.
@@ -1422,7 +1497,7 @@
                 alert(
                     `Item receipt scan complete.\n\n` +
                     `${logs.length} Item receive log${logs.length===1?'':'s'} checked\n` +
-                    `0 new insurance-payment candidates found\n\n` +
+                    `0 matching tier-payment candidates found\n\n` +
                     `Window: ${formatScanWindow(windowInfo.from, windowInfo.to)}
 ` +
                     `Mode: ${windowInfo.reason}`
@@ -1441,10 +1516,22 @@
                     return;
                 }
 
-                await resolveReceiptSender(receipt);
                 await resolveReceiptItem(receipt);
 
+                // Only consider items currently configured as valid payment items
+                // on active insurance tiers. Unrelated gifts/transfers are ignored.
+                if(!receiptMatchesConfiguredItem(receipt)){
+                    showNext();
+                    return;
+                }
+
+                await resolveReceiptSender(receipt);
+
                 const matches=state.tiers.filter(t=>tierMatchesReceipt(t,receipt));
+
+                // Item matches a configured payment item, but quantity may not match
+                // any tier exactly. Keep the confirmation dialog so the provider can
+                // review ambiguous cases rather than silently losing a payment.
                 itemReceiptModal(receipt,matches,showNext);
             };
 
@@ -1561,6 +1648,8 @@
             <p>Checks Torn's <b>Item receive</b> log (4103) for direct item transfers that match your configured tier item ID/name and quantity. You confirm every match before HJI creates a customer, policy or payment.</p>
             <p>First scan looks back <b>7 days</b>. Later scans start from the <b>last successful check</b> with a 5-minute overlap, and HJI remembers processed log IDs to prevent duplicates.</p>
             <p><b>Rescan last 7 days</b> is a recovery tool for older transfers that were missed by a previous scanner version. Already processed log IDs are still ignored, so it will not duplicate accepted payments.</p>
+            <p><b>Watching for:</b> ${itemScanFilterSummaryHtml()}</p>
+            <p class="hji-muted">Only incoming items configured on active tiers are considered possible insurance payments. Other incoming items are ignored.</p>
             <p><b>Last successful item scan:</b> ${esc(lastItemScan)}</p>
           </div>
 
