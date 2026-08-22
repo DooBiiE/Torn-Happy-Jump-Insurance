@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.2
+// @version      0.4.3
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.2';
+    const VERSION = '0.4.3';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -1130,9 +1130,31 @@
                 clearInterval(timer);
                 managerMailFillInProgress = false;
                 storage.set('pendingStatusMail', null);
-                alert('Torn Mail was opened and the status update was copied to your clipboard. Paste it into the composer if Torn/PDA did not allow automatic filling.');
+                alert('Torn Mail opened, but Torn/PDA did not allow the Manager to fill the composer automatically. The status update is on your clipboard ready to paste.');
             }
         }, 500);
+    }
+
+    async function openFreshTornMailComposer(claimantId) {
+        const id=String(claimantId||'').trim();
+        if(!/^\d+$/.test(id)) throw new Error('Claimant Torn ID is missing or invalid.');
+
+        const composeHash=`#/p=compose&XID=${encodeURIComponent(id)}`;
+
+        // Torn is a SPA. If Notify is used again while already in Messages,
+        // assigning the same compose URL may not create a new composer.
+        // Briefly route away first, then open a fresh compose route.
+        if(location.pathname.includes('messages.php')){
+            if(location.hash===composeHash || /#\/p=compose/i.test(location.hash)){
+                location.hash='#/p=inbox';
+                await new Promise(resolve=>setTimeout(resolve,250));
+            }
+
+            location.hash=composeHash;
+            return;
+        }
+
+        window.location.href=`https://www.torn.com/messages.php${composeHash}`;
     }
 
     async function prepareClaimStatusMail(c, status=null, note=null) {
@@ -1142,6 +1164,11 @@
         const chosenNote = note ?? c.providerNote ?? '';
         const mail = buildClaimStatusMail(c, chosenStatus, chosenNote);
 
+        // Reset any previous PDA fill attempt before preparing the next notification.
+        managerMailFillInProgress = false;
+        storage.set('pendingStatusMail', null);
+
+        // Clipboard remains a fallback, but opening the Torn composer is the primary path.
         await copyText(`${mail.subject}\n\n${mail.body}`);
 
         storage.set('pendingStatusMail', {
@@ -1151,8 +1178,13 @@
             createdAt: Date.now()
         });
 
-        window.location.href = `https://www.torn.com/messages.php#/p=compose&XID=${encodeURIComponent(c.claimantId || '')}`;
-        setTimeout(tryFillManagerStatusMail, 1000);
+        try {
+            await openFreshTornMailComposer(c.claimantId);
+            setTimeout(tryFillManagerStatusMail, 900);
+        } catch(e) {
+            storage.set('pendingStatusMail', null);
+            alert(`Could not open Torn Mail.\n\n${e.message}\n\nThe status update has been copied to your clipboard.`);
+        }
     }
 
     function renderClaims(body) {
