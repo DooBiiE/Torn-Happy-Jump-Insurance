@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.16
+// @version      0.4.17
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.16';
+    const VERSION = '0.4.17';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -29,6 +29,7 @@
     const ITEM_SCAN_FIRST_LOOKBACK_SECONDS = 7 * 24 * 60 * 60;
     const ITEM_SCAN_OVERLAP_SECONDS = 5 * 60;
     const ITEM_SCAN_PAGE_LIMIT = 100;
+    const ITEM_SCANNER_SCHEMA_VERSION = 2;
 
 
     function decodeStoredValue(value, fallback) {
@@ -452,7 +453,8 @@
             apiAccountId: '',
             apiAccountName: '',
             lastItemLogScan: null,
-            processedItemLogIds: []
+            processedItemLogIds: [],
+            itemScannerSchemaVersion: 0
         };
         const decoded = decodeStoredValue(value, {});
         const out = decoded && typeof decoded === 'object' && !Array.isArray(decoded)
@@ -462,6 +464,7 @@
         out.processedItemLogIds = Array.isArray(out.processedItemLogIds)
             ? out.processedItemLogIds.map(String).slice(-1000)
             : [];
+        out.itemScannerSchemaVersion = Number(out.itemScannerSchemaVersion || 0);
 
         return out;
     }
@@ -1266,22 +1269,51 @@
         return Number.isFinite(ms) ? Math.floor(ms / 1000) : 0;
     }
 
-    function itemScanWindow() {
+    function itemScanWindow(forceLookbackDays=0) {
         const now = unixNow();
+
+        if (forceLookbackDays > 0) {
+            return {
+                from: now - (Number(forceLookbackDays) * 24 * 60 * 60),
+                to: now,
+                firstRun: false,
+                recovery: true,
+                reason: `Manual ${forceLookbackDays}-day rescan`
+            };
+        }
+
         const last = lastSuccessfulItemScanUnix();
+        const scannerVersion = Number(state.settings.itemScannerSchemaVersion || 0);
+
+        // Earlier scanner builds could advance the saved checkpoint even while the
+        // 4103 parser was not correctly reading Torn's response. On the first scan
+        // after this fixed scanner is installed, deliberately backfill seven days.
+        if (scannerVersion < ITEM_SCANNER_SCHEMA_VERSION) {
+            return {
+                from: now - ITEM_SCAN_FIRST_LOOKBACK_SECONDS,
+                to: now,
+                firstRun: false,
+                recovery: true,
+                reason: 'Automatic scanner recovery backfill'
+            };
+        }
 
         if (!last) {
             return {
                 from: now - ITEM_SCAN_FIRST_LOOKBACK_SECONDS,
                 to: now,
-                firstRun: true
+                firstRun: true,
+                recovery: false,
+                reason: 'First scan'
             };
         }
 
         return {
             from: Math.max(0, last - ITEM_SCAN_OVERLAP_SECONDS),
             to: now,
-            firstRun: false
+            firstRun: false,
+            recovery: false,
+            reason: 'Since last successful scan'
         };
     }
 
@@ -1352,7 +1384,7 @@
         return `${from} → ${to}`;
     }
 
-    async function scanItemPayments() {
+    async function scanItemPayments(forceLookbackDays=0) {
         const key=String(state.settings.apiKey || '').trim();
         if(!key) return alert('Add the Manager API key in Settings first.');
 
@@ -1362,7 +1394,7 @@
             btn.textContent='Scanning item receipts…';
         }
 
-        const windowInfo=itemScanWindow();
+        const windowInfo=itemScanWindow(forceLookbackDays);
 
         try {
             // Query Torn's dedicated direct-item receipt log type (Item receive 4103)
@@ -1383,6 +1415,7 @@
             // successfully retrieved. Next scan overlaps by five minutes.
             state.settings.lastItemLogScan=
                 new Date(windowInfo.to * 1000).toISOString();
+            state.settings.itemScannerSchemaVersion = ITEM_SCANNER_SCHEMA_VERSION;
             saveAll();
 
             if(!candidates.length){
@@ -1390,7 +1423,9 @@
                     `Item receipt scan complete.\n\n` +
                     `${logs.length} Item receive log${logs.length===1?'':'s'} checked\n` +
                     `0 new insurance-payment candidates found\n\n` +
-                    `Window: ${formatScanWindow(windowInfo.from, windowInfo.to)}`
+                    `Window: ${formatScanWindow(windowInfo.from, windowInfo.to)}
+` +
+                    `Mode: ${windowInfo.reason}`
                 );
                 renderDashboard(overlay.querySelector('.hji-body'));
                 return;
@@ -1518,12 +1553,14 @@
         body.innerHTML=`
           <div class="hji-toolbar">
             <button class="hji-btn good" id="hji-scan-items">↻ Scan item payments</button>
+            <button class="hji-btn" id="hji-rescan-items-7d">↺ Rescan last 7 days</button>
           </div>
 
           <div class="hji-help">
             <strong>Incoming item-payment scan</strong>
             <p>Checks Torn's <b>Item receive</b> log (4103) for direct item transfers that match your configured tier item ID/name and quantity. You confirm every match before HJI creates a customer, policy or payment.</p>
             <p>First scan looks back <b>7 days</b>. Later scans start from the <b>last successful check</b> with a 5-minute overlap, and HJI remembers processed log IDs to prevent duplicates.</p>
+            <p><b>Rescan last 7 days</b> is a recovery tool for older transfers that were missed by a previous scanner version. Already processed log IDs are still ignored, so it will not duplicate accepted payments.</p>
             <p><b>Last successful item scan:</b> ${esc(lastItemScan)}</p>
           </div>
 
@@ -1598,7 +1635,11 @@
             <p>Use Policies for cover status and renewals, Payments for cash/item income, and Claims for payout handling and Torn Mail sync.</p>
           </div>`;
 
-        body.querySelector('#hji-scan-items').onclick=scanItemPayments;
+        body.querySelector('#hji-scan-items').onclick=()=>scanItemPayments();
+        body.querySelector('#hji-rescan-items-7d').onclick=()=>{
+            if(!confirm('Rescan the last 7 days of Torn Item receive logs?\n\nAlready processed transfers will be ignored.')) return;
+            scanItemPayments(7);
+        };
     }
 
     function renderCustomers(body) {
