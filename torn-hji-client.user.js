@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Client
 // @namespace    torn-hji
-// @version      0.3.4
+// @version      0.3.5
 // @description  Insured-user client for importing Happy Jump policies and preparing structured Torn Mail claims.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -16,7 +16,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.3.4';
+    const VERSION = '0.3.5';
     const PREFIX='torn_hji_client_v2_';
     const LEGACY_PREFIX='torn_hji_client_v1_';
     const CLAIM_PREFIX='[HJI CLAIM]';
@@ -527,26 +527,83 @@
         }
     }
 
+    let mailFillInProgress = false;
+    let lastHandledPendingMail = null;
+
     function tryFillPendingMail(){
         const p=storage.get('pending_mail',null);
-        if(!p||Date.now()-p.createdAt>10*60*1000)return;
-        if(!location.href.includes('messages.php'))return;
+        if(!p || !location.href.includes('messages.php')) return;
+
+        if(Date.now()-Number(p.createdAt||0)>10*60*1000){
+            storage.set('pending_mail',null);
+            return;
+        }
+
+        const pendingKey=`${p.createdAt||''}:${p.providerId||''}:${p.subject||''}`;
+        if(mailFillInProgress || lastHandledPendingMail===pendingKey) return;
+
+        mailFillInProgress=true;
         let tries=0;
+
+        const finish=(handled=false)=>{
+            mailFillInProgress=false;
+            lastHandledPendingMail=pendingKey;
+            storage.set('pending_mail',null);
+            if(!handled){
+                alert('Torn Mail was opened and the complete claim was copied to your clipboard. Paste it into the composer if Torn/PDA did not allow automatic filling.');
+            }
+        };
+
         const timer=setInterval(()=>{
             tries++;
+
+            if(!location.href.includes('messages.php')){
+                clearInterval(timer);
+                mailFillInProgress=false;
+                return;
+            }
+
             const inputs=[...document.querySelectorAll('input')];
             const textareas=[...document.querySelectorAll('textarea')];
-            const subject=inputs.find(x=>/subject/i.test(x.placeholder||'')||/subject/i.test(x.name||'')||/subject/i.test(x.getAttribute('aria-label')||''));
-            const body=textareas.find(x=>x.offsetParent!==null)||document.querySelector('[contenteditable="true"]');
-            if(subject&&!subject.value)setNativeValue(subject,p.subject);
-            if(body){
-                if(body.tagName==='TEXTAREA'&&!body.value)setNativeValue(body,p.body);
-                else if(body.isContentEditable&&!body.textContent){body.focus();document.execCommand('insertText',false,p.body);body.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:p.body}))}
+            const subject=inputs.find(x=>
+                /subject/i.test(x.placeholder||'') ||
+                /subject/i.test(x.name||'') ||
+                /subject/i.test(x.getAttribute('aria-label')||'')
+            );
+            const body=textareas.find(x=>x.offsetParent!==null) ||
+                       document.querySelector('[contenteditable="true"]');
+
+            let subjectReady=false;
+            let bodyReady=false;
+
+            if(subject){
+                if(!subject.value) setNativeValue(subject,p.subject);
+                subjectReady=String(subject.value||'').trim().length>0;
             }
-            if((subject&&body)||tries>20){
+
+            if(body){
+                if(body.tagName==='TEXTAREA'){
+                    if(!body.value) setNativeValue(body,p.body);
+                    bodyReady=String(body.value||'').trim().length>0;
+                }else if(body.isContentEditable){
+                    if(!body.textContent){
+                        body.focus();
+                        try{document.execCommand('insertText',false,p.body)}catch{}
+                        body.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:p.body}));
+                    }
+                    bodyReady=String(body.textContent||'').trim().length>0;
+                }
+            }
+
+            if(subjectReady && bodyReady){
                 clearInterval(timer);
-                if(subject&&body)storage.set('pending_mail',null);
-                else if(tries>20)alert('Torn Mail was opened and the complete claim was copied to your clipboard. Paste it into the composer if Torn/PDA did not allow automatic filling.');
+                finish(true);
+                return;
+            }
+
+            if(tries>=20){
+                clearInterval(timer);
+                finish(false);
             }
         },500);
     }

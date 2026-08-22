@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.3.8
+// @version      0.3.9
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.3.8';
+    const VERSION = '0.3.9';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const API_BASE = 'https://api.torn.com/v2';
@@ -834,25 +834,110 @@
     }
 
     function renderPayments(body) {
-        body.innerHTML=`<div class="hji-toolbar"><button class="hji-btn good" id="hji-add-payment">+ Record payment</button></div>
-        <table class="hji-table"><thead><tr><th>Date</th><th>Customer</th><th>Method</th><th>Amount</th><th>Notes</th></tr></thead><tbody>
-        ${[...state.payments].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(p=>{const c=getCustomer(p.customerId);return `<tr><td>${dateOnly(p.date)}</td><td>${esc(c?.name||'Unknown')}</td><td>${esc(p.method)}</td><td>${p.method==='cash'?'$'+money(p.amount):`${esc(p.itemQty)} × ${esc(p.itemName)}`}</td><td>${esc(p.notes||'')}</td></tr>`}).join('')||'<tr><td colspan="5">No payments recorded.</td></tr>'}
-        </tbody></table>`;
+        body.innerHTML=`
+        <div class="hji-toolbar"><button class="hji-btn good" id="hji-add-payment">+ Record payment</button></div>
+        <div class="hji-help">
+          <strong>Payment linking</strong>
+          <p>Payments can be linked to a specific policy. Renewal payments are linked automatically; manual payments can be linked when you record them.</p>
+        </div>
+        <div class="hji-table-wrap"><table class="hji-table">
+          <thead><tr><th>Date</th><th>Customer</th><th>Policy</th><th>Method</th><th>Amount</th><th>Notes</th></tr></thead>
+          <tbody>
+          ${[...state.payments].sort((a,b)=>new Date(b.date)-new Date(a.date)).map(p=>{
+              const c=getCustomer(p.customerId);
+              const pol=p.policyId ? getPolicy(p.policyId) : null;
+              const tier=pol ? getTier(pol.tierId) : null;
+              const policyLabel=pol ? `${tier?.name || pol.tierName || 'Policy'}${pol.endDate ? ` · ends ${dateOnly(pol.endDate)}` : ''}` : '—';
+              return `<tr>
+                <td>${dateOnly(p.date)}</td>
+                <td>${esc(c?.name||'Unknown')}</td>
+                <td>${esc(policyLabel)}</td>
+                <td>${esc(p.method)}</td>
+                <td>${p.method==='cash'?'$'+money(p.amount):`${esc(p.itemQty)} × ${esc(p.itemName)}`}</td>
+                <td>${esc(p.notes||'')}</td>
+              </tr>`;
+          }).join('')||'<tr><td colspan="6">No payments recorded.</td></tr>'}
+          </tbody>
+        </table></div>`;
         body.querySelector('#hji-add-payment').onclick=()=>paymentModal();
     }
 
     function paymentModal(){
         if(!state.customers.length)return alert('Add a customer first.');
+
         const modal=createModal('Record payment');
         modal.content.innerHTML+=`<div class="hji-form">
           <label>Customer<select id="pay-c">${state.customers.map(c=>`<option value="${c.id}">${esc(c.name)} [${esc(c.tornId)}]</option>`).join('')}</select></label>
+          <label>Policy<select id="pay-policy"></select></label>
           <label>Date<input type="date" id="pay-date" value="${new Date().toISOString().slice(0,10)}"></label>
           <label>Method<select id="pay-method"><option value="cash">Cash</option><option value="item">Item</option></select></label>
           <label>Cash amount<input id="pay-amount" inputmode="numeric" value="0"></label>
-          <label>Item name<input id="pay-item" value=""></label><label>Item quantity<input id="pay-qty" inputmode="numeric" value="0"></label>
+          <label>Item name<input id="pay-item" value=""></label>
+          <label>Item quantity<input id="pay-qty" inputmode="numeric" value="0"></label>
           <label class="wide">Notes<textarea id="pay-notes"></textarea></label>
         </div>`;
-        modal.addSave(()=>{state.payments.push({id:uid('payment'),customerId:modal.el.querySelector('#pay-c').value,date:new Date(modal.el.querySelector('#pay-date').value+'T00:00:00').toISOString(),method:modal.el.querySelector('#pay-method').value,amount:Number(modal.el.querySelector('#pay-amount').value||0),itemName:modal.el.querySelector('#pay-item').value.trim(),itemQty:Number(modal.el.querySelector('#pay-qty').value||0),notes:modal.el.querySelector('#pay-notes').value.trim(),createdAt:nowISO()});saveAll();modal.close();renderTab();});
+
+        const customerSelect=modal.el.querySelector('#pay-c');
+        const policySelect=modal.el.querySelector('#pay-policy');
+        const methodSelect=modal.el.querySelector('#pay-method');
+        const amountInput=modal.el.querySelector('#pay-amount');
+        const itemInput=modal.el.querySelector('#pay-item');
+        const qtyInput=modal.el.querySelector('#pay-qty');
+
+        function refreshPolicies(){
+            const policies=state.policies.filter(p=>p.customerId===customerSelect.value);
+            policySelect.innerHTML=
+                `<option value="">No policy / general payment</option>`+
+                policies.map(p=>{
+                    const t=getTier(p.tierId);
+                    const st=policyStatus(p)[0];
+                    const suffix=p.type==='monthly'&&p.endDate?` · ends ${dateOnly(p.endDate)}`:'';
+                    return `<option value="${p.id}">${esc(t?.name||p.tierName||'Policy')} · ${esc(st)}${esc(suffix)}</option>`;
+                }).join('');
+            applyPolicyDefaults();
+        }
+
+        function applyPolicyDefaults(){
+            const policy=policySelect.value?getPolicy(policySelect.value):null;
+            if(!policy)return;
+            const tier=getTier(policy.tierId);
+            if(!tier)return;
+            amountInput.value=Number(tier.cashPrice||0);
+            itemInput.value=tier.itemName||'';
+            qtyInput.value=Number(tier.itemQty||0);
+        }
+
+        function updateMethodVisibility(){
+            const itemMode=methodSelect.value==='item';
+            amountInput.closest('label').style.opacity=itemMode?'.55':'1';
+            itemInput.closest('label').style.opacity=itemMode?'1':'.55';
+            qtyInput.closest('label').style.opacity=itemMode?'1':'.55';
+        }
+
+        customerSelect.onchange=refreshPolicies;
+        policySelect.onchange=applyPolicyDefaults;
+        methodSelect.onchange=updateMethodVisibility;
+        refreshPolicies();
+        updateMethodVisibility();
+
+        modal.addSave(()=>{
+            const method=methodSelect.value;
+            state.payments.push({
+                id:uid('payment'),
+                customerId:customerSelect.value,
+                policyId:policySelect.value||null,
+                date:new Date(modal.el.querySelector('#pay-date').value+'T00:00:00').toISOString(),
+                method,
+                amount:Number(amountInput.value||0),
+                itemName:itemInput.value.trim(),
+                itemQty:Number(qtyInput.value||0),
+                notes:modal.el.querySelector('#pay-notes').value.trim(),
+                createdAt:nowISO()
+            });
+            saveAll();
+            modal.close();
+            renderTab();
+        });
     }
 
     function renderClaims(body) {
