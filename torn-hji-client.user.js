@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Client
 // @namespace    torn-hji
-// @version      0.3.7
+// @version      0.3.8
 // @description  Insured-user client for importing Happy Jump policies and preparing structured Torn Mail claims.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -18,7 +18,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.3.7';
+    const VERSION = '0.3.8';
     const PREFIX='torn_hji_client_v2_';
     const LEGACY_PREFIX='torn_hji_client_v1_';
     const CLAIM_PREFIX='[HJI CLAIM]';
@@ -312,6 +312,15 @@
         })[String(status||'prepared').toLowerCase()] || String(status||'Prepared');
     }
 
+    function claimSyncDisplay(c){
+        if(!c?.statusUpdatedAt) return 'Not synced yet';
+        try{
+            return new Date(c.statusUpdatedAt).toLocaleString('en-GB');
+        }catch{
+            return 'Synced';
+        }
+    }
+
     function clientClaimStatusClass(status){
         status=String(status||'prepared').toLowerCase();
         if(status==='approved'||status==='paid') return 'hc-status-active';
@@ -398,7 +407,7 @@
             state.settings.lastStatusSync=new Date().toISOString();
             save();
 
-            alert(`Claim status sync complete.\n\n${matched} status message${matched===1?'':'s'} matched\n${changed} claim${changed===1?'':'s'} updated`);
+            alert(`Claim status sync complete.\n\n${matched} status message${matched===1?'':'s'} matched\n${changed} claim${changed===1?'':'s'} updated\n\nSynced status mails can now be deleted from Torn Mail.`);
             open('claims');
         }catch(e){
             alert(`Could not sync claim statuses.\n\n${e.message}`);
@@ -582,7 +591,7 @@
         return `
           <div class="hc-help">
             <strong>My claims</strong>
-            <p>Claims start as <b>Prepared</b>. When your provider sends a structured HJI status mail, the optional status-sync feature can update the status here.</p>
+            <p>Claims start as <b>Prepared</b>. When your provider sends a structured HJI status mail, the optional status-sync feature can update the status here.</p><p>After a status has synced successfully, the Torn Mail can be deleted — the status is stored locally in this Client.</p>
             <p><b>Last status sync:</b> ${esc(lastSync)}</p>
           </div>
 
@@ -598,6 +607,7 @@
                 <div class="hc-field"><small>Status</small><span class="${clientClaimStatusClass(c.status)}">${esc(clientClaimStatusLabel(c.status))}</span></div>
                 <div class="hc-field"><small>Provider</small>${esc(c.providerName||'')} [${esc(c.providerId||'')}]</div>
                 <div class="hc-field"><small>Created</small>${esc(new Date(c.createdAt).toLocaleString('en-GB'))}</div>
+                <div class="hc-field"><small>Last synced</small>${esc(claimSyncDisplay(c))}</div>
               </div>
               <div class="hc-field" style="margin-top:8px"><small>Claim summary</small>${esc(c.summary||'')}</div>
             </div>`).join('') : '<div class="hc-card"><div class="hc-muted">No claims prepared yet.</div></div>'}

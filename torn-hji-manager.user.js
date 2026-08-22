@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.3
+// @version      0.4.4
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.3';
+    const VERSION = '0.4.4';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -1011,13 +1011,21 @@
 
 
     function openClaimMail(c) {
-        if (c?.mailMessageId) {
+        if (!c) return;
+
+        if (c.mailMessageId) {
+            // Torn may show a missing/deleted message page if the mail has already
+            // been removed. The HJI claim itself remains safely stored locally.
+            c.mailOpenAttemptedAt = nowISO();
+            saveAll();
             window.location.href = `https://www.torn.com/messages.php#/p=read&ID=${encodeURIComponent(c.mailMessageId)}&suffix=inbox`;
             return;
         }
 
-        alert('This claim does not have a Torn Mail message ID. Opening your inbox instead.');
-        window.location.href = 'https://www.torn.com/messages.php#/p=inbox';
+        alert(
+            'Original Torn Mail is no longer available to HJI.\n\n' +
+            'The claim itself is still stored safely in the HJI Manager.'
+        );
     }
 
     function openClaimTrade(c) {
@@ -1195,7 +1203,7 @@
 
         <div class="hji-help">
           <strong>Claim workflow</strong>
-          <p>Use <b>Open Mail</b> to review the original Torn message, <b>Trade</b> to open a trade with the claimant for a payout, and <b>Notify</b> to prepare a structured status update for the Client.</p>
+          <p>Use <b>Open Mail</b> to review the original Torn message, <b>Trade</b> to open a trade with the claimant for a payout, and <b>Notify</b> to prepare a structured status update for the Client.</p><p>Once a claim has been scanned, it is stored locally in HJI and the original Torn Mail can be deleted without removing the claim from the Manager.</p>
           <p>The Manager never presses Torn's Send button automatically.</p>
         </div>
 
@@ -1263,6 +1271,7 @@
           <p><strong>Tier:</strong> ${esc(c.tierName||'—')}</p>
           <p><strong>Submitted:</strong> ${esc(new Date(c.submittedAt).toLocaleString('en-GB'))}</p>
           <p><strong>Source:</strong> ${esc(c.source||'')}</p>
+          <p><strong>Storage:</strong> <span class="hji-active">Stored locally in HJI</span></p>
           <p><strong>Details</strong></p>
           <pre style="white-space:pre-wrap">${esc(c.details||c.rawBody||'')}</pre>
         </div>
