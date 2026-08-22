@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Client
 // @namespace    torn-hji
-// @version      0.3.9
+// @version      0.4.0
 // @description  Insured-user client for importing Happy Jump policies and preparing structured Torn Mail claims.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -18,7 +18,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.3.9';
+    const VERSION = '0.4.0';
     const PREFIX='torn_hji_client_v2_';
     const LEGACY_PREFIX='torn_hji_client_v1_';
     const CLAIM_PREFIX='[HJI CLAIM]';
@@ -443,6 +443,14 @@
         #hji-client-app.hc-compact{width:min(560px,86vw);height:min(500px,66vh)}
         .hc-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;background:linear-gradient(#3b3b3b,#292929);border-bottom:1px solid #555;cursor:move;user-select:none;touch-action:none}.hc-head h2{margin:0;color:#f5f5f5;font-size:18px}.hc-head-actions{display:flex;gap:6px}
         .hc-tabs{display:flex;gap:4px;padding:7px;background:#252525;border-bottom:1px solid #444;overflow:auto}.hc-tab{background:#333;color:#ddd;border:1px solid #555;border-radius:4px;padding:7px 10px;white-space:nowrap}.hc-tab.active{background:#555;color:#fff}.hc-body{padding:12px;overflow:auto;flex:1;background:var(--hc-bg);color:var(--hc-text)}
+        .hc-claim-toggle{width:100%;display:flex;justify-content:space-between;align-items:center;gap:10px;background:#303030;color:#f2f2f2;border:1px solid #505050;border-radius:4px;padding:9px 10px;cursor:pointer;text-align:left}
+        .hc-claim-toggle .hc-claim-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+        .hc-claim-toggle .hc-claim-ref{font-weight:700;color:#fff}
+        .hc-claim-toggle .hc-claim-meta{font-size:12px;color:#aaa}
+        .hc-claim-toggle .hc-claim-chevron{font-size:16px;transition:transform .15s ease}
+        .hc-claim-toggle[aria-expanded="true"] .hc-claim-chevron{transform:rotate(180deg)}
+        .hc-claim-details{display:none;margin-top:8px}
+        .hc-claim-details.open{display:block}
         .hc-card{background:var(--hc-panel);border:1px solid var(--hc-border);border-radius:5px;padding:11px;margin-bottom:10px;color:var(--hc-text)}.hc-card h3{margin:0 0 8px;color:#fff}
         .hc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.hc-field{background:#252525;padding:9px;border-radius:4px;color:#eee}.hc-field small{display:block;color:#aaa;margin-bottom:3px}
         .hc-btn{background:linear-gradient(#4a4a4a,#333);color:#f5f5f5!important;border:1px solid #606060;border-radius:4px;padding:8px 10px;cursor:pointer}.hc-btn.good{background:linear-gradient(#4f7e5e,#365942);border-color:#618e6c}.hc-btn.danger{background:linear-gradient(#8f4343,#683030);border-color:#a95656}.hc-close,.hc-size{background:#444;color:#f5f5f5;border:1px solid #666;border-radius:4px;padding:6px 9px;cursor:pointer}
@@ -600,6 +608,7 @@
           <div class="hc-tabs">
             <button class="hc-tab ${currentClientView==='policies'?'active':''}" data-client-tab="policies">Policies</button>
             <button class="hc-tab ${currentClientView==='claims'?'active':''}" data-client-tab="claims">Claims (${state.claims.length})</button>
+            <button class="hc-tab ${currentClientView==='settings'?'active':''}" data-client-tab="settings">Settings</button>
           </div>`;
     }
 
@@ -611,7 +620,8 @@
         return `
           <div class="hc-help">
             <strong>My claims</strong>
-            <p>Claims start as <b>Prepared</b>. When your provider sends a structured HJI status mail, the optional status-sync feature can update the status here.</p><p>After a status has synced successfully, the Torn Mail can be deleted — the status is stored locally in this Client. If a single-jump claim reaches Paid, that linked policy is also marked Paid out.</p>
+            <p>Claims start as <b>Prepared</b>. Provider status mails can update them here after sync.</p>
+            <p>After a status has synced successfully, the Torn Mail can be deleted — the status is stored locally in this Client.</p>
             <p><b>Last status sync:</b> ${esc(lastSync)}</p>
           </div>
 
@@ -620,16 +630,25 @@
             <button class="hc-btn" id="hc-sync-status">Sync claim statuses</button>
           </div>
 
-          ${state.claims.length ? state.claims.slice().reverse().map(c=>`
+          ${state.claims.length ? state.claims.slice().reverse().map((c,index)=>`
             <div class="hc-card">
-              <div class="hc-grid">
-                <div class="hc-field"><small>Reference</small><strong>${esc(c.reference)}</strong></div>
-                <div class="hc-field"><small>Status</small><span class="${clientClaimStatusClass(c.status)}">${esc(clientClaimStatusLabel(c.status))}</span></div>
-                <div class="hc-field"><small>Provider</small>${esc(c.providerName||'')} [${esc(c.providerId||'')}]</div>
-                <div class="hc-field"><small>Created</small>${esc(new Date(c.createdAt).toLocaleString('en-GB'))}</div>
-                <div class="hc-field"><small>Last synced</small>${esc(claimSyncDisplay(c))}</div>
+              <button class="hc-claim-toggle" type="button" aria-expanded="false" data-claim-toggle="${index}">
+                <span class="hc-claim-main">
+                  <span class="hc-claim-ref">${esc(c.reference)}</span>
+                  <span class="hc-claim-meta">${esc(c.providerName||'Unknown provider')} · <span class="${clientClaimStatusClass(c.status)}">${esc(clientClaimStatusLabel(c.status))}</span></span>
+                </span>
+                <span class="hc-claim-chevron">⌄</span>
+              </button>
+              <div class="hc-claim-details" data-claim-details="${index}">
+                <div class="hc-grid">
+                  <div class="hc-field"><small>Reference</small><strong>${esc(c.reference)}</strong></div>
+                  <div class="hc-field"><small>Status</small><span class="${clientClaimStatusClass(c.status)}">${esc(clientClaimStatusLabel(c.status))}</span></div>
+                  <div class="hc-field"><small>Provider</small>${esc(c.providerName||'')} [${esc(c.providerId||'')}]</div>
+                  <div class="hc-field"><small>Created</small>${esc(new Date(c.createdAt).toLocaleString('en-GB'))}</div>
+                  <div class="hc-field"><small>Last synced</small>${esc(claimSyncDisplay(c))}</div>
+                </div>
+                <div class="hc-field" style="margin-top:8px"><small>Claim summary</small>${esc(c.summary||'')}</div>
               </div>
-              <div class="hc-field" style="margin-top:8px"><small>Claim summary</small>${esc(c.summary||'')}</div>
             </div>`).join('') : '<div class="hc-card"><div class="hc-muted">No claims prepared yet.</div></div>'}
         `;
     }
@@ -644,7 +663,6 @@
 
           <div class="hc-actions" style="margin:0 0 10px">
             <button class="hc-btn good" id="hc-import">Import policy setup code</button>
-            <button class="hc-btn" id="hc-settings">Settings</button>
           </div>
 
           <div class="hc-card"><h3>My policies</h3>
@@ -652,18 +670,76 @@
           </div>`;
     }
 
+    function settingsViewHtml(){
+        const detected=detectCurrentTornUser();
+        return `<div class="hc-card"><h3>Client settings</h3>
+          <div class="hc-help"><p>The Client does <b>not</b> need an API key to import policies or submit claims.</p><p>An API key is optional and is used only for claim-status syncing.</p></div>
+          <div class="hc-form">
+            <label>Your Torn name<input id="cs-cname" value="${esc(state.claimantName||'')}"></label>
+            <label>Your Torn ID<input id="cs-cid" inputmode="numeric" value="${esc(state.claimantId||'')}"></label>
+            <label class="wide">Optional status-sync API key<div style="display:flex;gap:7px"><input id="cs-status-key" type="password" value="${esc(state.settings.statusApiKey||'')}" placeholder="Optional"><button class="hc-btn" type="button" id="cs-show-key">Show</button></div></label>
+          </div>
+          <div class="hc-actions">
+            <button class="hc-btn" id="cs-detect">Detect My Torn Account</button>
+            <button class="hc-btn" id="cs-key-builder">Generate status-sync key</button>
+            <button class="hc-btn good" id="cs-save">Save settings</button>
+          </div>
+          <div class="hc-muted" style="margin-top:8px">${detected?`Detected from ${esc(detected.source)}: ${esc(detected.name||'Unknown')} [${esc(detected.id)}]`:'No account details were detected from the current Torn page yet.'}</div>
+        </div>`;
+    }
+
     function renderClientView(){
         if(!overlay)return;
         const body=overlay.querySelector('.hc-body');
         if(!body)return;
 
-        body.innerHTML=currentClientView==='claims' ? claimsViewHtml() : policiesViewHtml();
-
         if(currentClientView==='claims'){
+            body.innerHTML=claimsViewHtml();
             body.querySelector('#hc-new-claim')?.addEventListener('click',claimModal);
             body.querySelector('#hc-sync-status')?.addEventListener('click',syncClaimStatuses);
+
+            body.querySelectorAll('[data-claim-toggle]').forEach(btn=>{
+                btn.onclick=()=>{
+                    const details=body.querySelector(`[data-claim-details="${btn.dataset.claimToggle}"]`);
+                    if(!details)return;
+                    const open=details.classList.toggle('open');
+                    btn.setAttribute('aria-expanded',open?'true':'false');
+                };
+            });
+
+        }else if(currentClientView==='settings'){
+            body.innerHTML=settingsViewHtml();
+            const keyInput=body.querySelector('#cs-status-key');
+            const keyUrl='https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Happy%20Jump%20Insurance%20Client%20Status&user=messages';
+
+            body.querySelector('#cs-show-key').onclick=()=>{
+                const showing=keyInput.type==='text';
+                keyInput.type=showing?'password':'text';
+                body.querySelector('#cs-show-key').textContent=showing?'Show':'Hide';
+            };
+            body.querySelector('#cs-detect').onclick=()=>{
+                const found=detectCurrentTornUser();
+                if(!found)return alert('Could not detect your Torn account from the current page. You can still enter the fields manually.');
+                body.querySelector('#cs-cid').value=found.id;
+                if(found.name)body.querySelector('#cs-cname').value=found.name;
+                state.claimantId=found.id;
+                if(found.name)state.claimantName=found.name;
+                save();
+                alert(`Detected ${found.name||'Torn user'} [${found.id}]`);
+            };
+            body.querySelector('#cs-key-builder').onclick=()=>{
+                const a=document.createElement('a');a.href=keyUrl;a.target='_blank';a.rel='noopener noreferrer';document.body.appendChild(a);a.click();a.remove();
+            };
+            body.querySelector('#cs-save').onclick=()=>{
+                state.claimantName=body.querySelector('#cs-cname').value.trim();
+                state.claimantId=body.querySelector('#cs-cid').value.trim();
+                state.settings.statusApiKey=keyInput.value.trim();
+                save();
+                alert('Client settings saved.');
+                open('settings');
+            };
         }else{
-            body.querySelector('#hc-settings')?.addEventListener('click',settingsModal);
+            body.innerHTML=policiesViewHtml();
             body.querySelector('#hc-import')?.addEventListener('click',importModal);
             body.querySelectorAll('[data-remove-policy]').forEach(b=>b.onclick=()=>removePolicy(b.dataset.removePolicy));
         }
@@ -766,80 +842,7 @@
         state.policies=state.policies.filter(x=>x.localId!==localId);save();open();
     }
 
-    function settingsModal(){
-        const body=overlay.querySelector('.hc-body');
-        const detected=detectCurrentTornUser();
-        const keyUrl='https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Happy%20Jump%20Insurance%20Client%20Status&user=messages';
-
-        body.innerHTML=`<div class="hc-card"><h3>Client settings</h3>
-          <div class="hc-help">
-            <p>The Client does <b>not</b> need an API key to import policies or submit claims.</p>
-            <p>An API key is optional and is used only if you want the Client to scan Torn Mail topics for claim-status updates from your provider.</p>
-          </div>
-
-          <div class="hc-form">
-            <label>Your Torn name<input id="cs-cname" value="${esc(state.claimantName||'')}"></label>
-            <label>Your Torn ID<input id="cs-cid" inputmode="numeric" value="${esc(state.claimantId||'')}"></label>
-
-            <label class="wide">Optional status-sync API key
-              <div style="display:flex;gap:7px">
-                <input id="cs-status-key" type="password" value="${esc(state.settings.statusApiKey||'')}" placeholder="Optional">
-                <button class="hc-btn" type="button" id="cs-show-key">Show</button>
-              </div>
-            </label>
-          </div>
-
-          <div class="hc-actions">
-            <button class="hc-btn" id="cs-detect">Detect My Torn Account</button>
-            <button class="hc-btn" id="cs-key-builder">Generate status-sync key</button>
-            <button class="hc-btn good" id="cs-save">Save</button>
-            <button class="hc-btn" id="cs-back">Back</button>
-          </div>
-
-          <div class="hc-muted" style="margin-top:8px">
-            ${detected?`Detected from ${esc(detected.source)}: ${esc(detected.name||'Unknown')} [${esc(detected.id)}]`:'No account details were detected from the current Torn page yet.'}
-          </div>
-        </div>`;
-
-        const keyInput=body.querySelector('#cs-status-key');
-
-        body.querySelector('#cs-show-key').onclick=()=>{
-            const showing=keyInput.type==='text';
-            keyInput.type=showing?'password':'text';
-            body.querySelector('#cs-show-key').textContent=showing?'Show':'Hide';
-        };
-
-        body.querySelector('#cs-detect').onclick=()=>{
-            const found=detectCurrentTornUser();
-            if(!found)return alert('Could not detect your Torn account from the current page. You can still enter the fields manually.');
-            body.querySelector('#cs-cid').value=found.id;
-            if(found.name)body.querySelector('#cs-cname').value=found.name;
-            state.claimantId=found.id;
-            if(found.name)state.claimantName=found.name;
-            save();
-            alert(`Detected ${found.name||'Torn user'} [${found.id}]`);
-        };
-
-        body.querySelector('#cs-key-builder').onclick=()=>{
-            const a=document.createElement('a');
-            a.href=keyUrl;
-            a.target='_blank';
-            a.rel='noopener noreferrer';
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-        };
-
-        body.querySelector('#cs-save').onclick=()=>{
-            state.claimantName=body.querySelector('#cs-cname').value.trim();
-            state.claimantId=body.querySelector('#cs-cid').value.trim();
-            state.settings.statusApiKey=keyInput.value.trim();
-            save();
-            open('policies');
-        };
-
-        body.querySelector('#cs-back').onclick=()=>open('policies');
-    }
+    function settingsModal(){ open('settings'); }
 
     function claimModal(){
         if(!state.policies.length)return alert('Import a policy first.');
