@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.11
+// @version      0.4.12
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.11';
+    const VERSION = '0.4.12';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -2108,7 +2108,7 @@
 
         <div class="hji-help">
           <strong>Tier management</strong>
-          <p>You can add, edit or delete insurance tiers to match the provider's offering.</p>
+          <p>You can add or edit insurance tiers to match the provider's offering. Tier deletion is available inside Edit to reduce accidental clicks.</p>
           <p>A tier that is still linked to an existing policy cannot be deleted. This protects historical policy and payment records.</p><p>For automatic item-payment matching, set the alternative item name and quantity. Adding the Torn item ID as well makes matching more reliable.</p>
         </div>
 
@@ -2127,7 +2127,6 @@
                 <td>
                   <div class="hji-toolbar" style="margin:0">
                     <button class="hji-btn" data-edit-tier="${t.id}">Edit</button>
-                    <button class="hji-btn danger" data-delete-tier="${t.id}" ${policyCount ? 'disabled title="This tier is still linked to a policy"' : ''}>Delete</button>
                   </div>
                 </td>
               </tr>`;
@@ -2137,25 +2136,6 @@
 
         body.querySelector('#hji-add-tier').onclick=()=>tierModal();
         body.querySelectorAll('[data-edit-tier]').forEach(b=>b.onclick=()=>tierModal(getTier(b.dataset.editTier)));
-
-        body.querySelectorAll('[data-delete-tier]').forEach(b=>{
-            b.onclick=()=>{
-                const tier=getTier(b.dataset.deleteTier);
-                if(!tier)return;
-
-                const policyCount=state.policies.filter(p=>p.tierId===tier.id).length;
-                if(policyCount){
-                    alert(`Cannot delete "${tier.name}".\n\nIt is still linked to ${policyCount} polic${policyCount===1?'y':'ies'}.`);
-                    return;
-                }
-
-                if(!confirm(`Delete tier "${tier.name}"?\n\nThis removes the tier from this Manager. Existing backups can still restore it.`))return;
-
-                state.tiers=state.tiers.filter(t=>t.id!==tier.id);
-                saveAll();
-                renderTab();
-            };
-        });
     }
 
     function tierModal(existing=null){
@@ -2173,6 +2153,47 @@
           <label>Item quantity<input id="tier-qty" inputmode="numeric" value="${esc(existing?.itemQty??0)}"></label>
         </div>`;
         bindMoneyInput(modal.el.querySelector('#tier-cash'));
+
+        if(existing){
+            const policyCount=state.policies.filter(p=>p.tierId===existing.id).length;
+
+            modal.actions.insertAdjacentHTML(
+                'afterbegin',
+                `<button class="hji-btn danger" id="tier-delete" ${policyCount ? 'disabled' : ''}>
+                    Delete Tier
+                </button>`
+            );
+
+            const deleteBtn=modal.el.querySelector('#tier-delete');
+
+            if(policyCount){
+                deleteBtn.title=`This tier is linked to ${policyCount} polic${policyCount===1?'y':'ies'} and cannot be deleted.`;
+            }
+
+            deleteBtn.onclick=()=>{
+                const currentPolicyCount=state.policies.filter(p=>p.tierId===existing.id).length;
+
+                if(currentPolicyCount){
+                    alert(
+                        `Cannot delete "${existing.name}".\n\n` +
+                        `It is still linked to ${currentPolicyCount} polic${currentPolicyCount===1?'y':'ies'}. ` +
+                        `Edit or remove those policies first.`
+                    );
+                    return;
+                }
+
+                if(!confirm(
+                    `Delete tier "${existing.name}"?\n\n` +
+                    `This removes the tier from this Manager. Existing backups can still restore it.`
+                )) return;
+
+                state.tiers=state.tiers.filter(t=>t.id!==existing.id);
+                saveAll();
+                modal.close();
+                renderTab();
+            };
+        }
+
         modal.addSave(()=>{const data={name:modal.el.querySelector('#tier-name').value.trim(),type:modal.el.querySelector('#tier-type').value,durationDays:Number(modal.el.querySelector('#tier-days').value||0),maxDvds:Number(modal.el.querySelector('#tier-dvds').value||0),coverage:modal.el.querySelector('#tier-cover').value.trim(),cashPrice:parseMoneyInput(modal.el.querySelector('#tier-cash').value),active:modal.el.querySelector('#tier-active').value==='1',itemName:modal.el.querySelector('#tier-item').value.trim(),itemId:modal.el.querySelector('#tier-item-id').value.trim(),itemQty:Number(modal.el.querySelector('#tier-qty').value||0)};if(!data.name)return alert('Tier name is required.');if(existing)Object.assign(existing,data);else state.tiers.push({id:uid('tier'),...data});saveAll();modal.close();renderTab();});
     }
 
