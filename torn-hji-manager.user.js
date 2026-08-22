@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.18
+// @version      0.4.19
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,17 +19,17 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.18';
+    const VERSION = '0.4.19';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
     const POLICY_PREFIX = '[HJI POLICY]';
     const API_BASE = 'https://api.torn.com/v2';
     const ITEM_RECEIVE_LOG_ID = 4103;
-    const ITEM_SCAN_FIRST_LOOKBACK_SECONDS = 7 * 24 * 60 * 60;
+    const ITEM_SCAN_FIRST_LOOKBACK_SECONDS = 30 * 24 * 60 * 60;
     const ITEM_SCAN_OVERLAP_SECONDS = 5 * 60;
     const ITEM_SCAN_PAGE_LIMIT = 100;
-    const ITEM_SCANNER_SCHEMA_VERSION = 2;
+    const ITEM_SCANNER_SCHEMA_VERSION = 3;
 
 
     function decodeStoredValue(value, fallback) {
@@ -1198,24 +1198,53 @@
     }
 
     function createPolicyFromItemReceipt(receipt, tier) {
-        let customer = state.customers.find(c =>
-            receipt.senderId && String(c.tornId) === String(receipt.senderId)
-        );
+        if (!receipt || !tier) {
+            throw new Error('Receipt or insurance tier is missing.');
+        }
+
+        const senderId = String(receipt.senderId || '').trim();
+        const senderName = String(receipt.senderName || '').trim();
+
+        if (!senderId && !senderName) {
+            throw new Error('Could not identify who sent the item.');
+        }
+
+        // 1) Find or create the customer.
+        let customer = senderId
+            ? state.customers.find(c => String(c.tornId || '') === senderId)
+            : state.customers.find(c =>
+                String(c.name || '').trim().toLowerCase() === senderName.toLowerCase()
+              );
+
+        let customerCreated = false;
 
         if (!customer) {
             customer = {
                 id:uid('customer'),
-                tornId:String(receipt.senderId || ''),
-                name:receipt.senderName || `Torn user ${receipt.senderId || ''}`.trim(),
-                notes:'Added from incoming item-payment log.',
+                tornId:senderId,
+                name:senderName || `Torn user ${senderId}`.trim(),
+                notes:'Added automatically from an incoming insurance item payment.',
                 createdAt:nowISO()
             };
+
             state.customers.push(customer);
+            customerCreated = true;
+        } else {
+            // Fill missing customer details if log/API resolution gave us more info.
+            if (!customer.tornId && senderId) customer.tornId = senderId;
+            if ((!customer.name || /^Torn user\b/i.test(customer.name)) && senderName) {
+                customer.name = senderName;
+            }
         }
 
+        // 2) Build the policy.
         const start = receipt.timestamp
             ? new Date(receipt.timestamp * 1000)
             : new Date();
+
+        if (Number.isNaN(start.getTime())) {
+            throw new Error('The incoming item log has an invalid timestamp.');
+        }
 
         const policy = {
             id:uid('policy'),
@@ -1225,35 +1254,49 @@
             type:tier.type,
             startDate:start.toISOString(),
             endDate:tier.type==='monthly'
-                ? new Date(start.getTime() + Number(tier.durationDays || 30) * 86400000).toISOString()
+                ? new Date(
+                    start.getTime() +
+                    Number(tier.durationDays || 30) * 86400000
+                  ).toISOString()
                 : null,
             status:'active',
             used:false,
             createdAt:nowISO(),
-            sourceItemLogId:receipt.logId
+            sourceItemLogId:String(receipt.logId || '')
         };
 
         state.policies.push(policy);
 
-        state.payments.push({
+        // 3) Record and link the item payment.
+        const paidQty = Number(receipt.quantity || tier.itemQty || 0);
+
+        const payment = {
             id:uid('payment'),
             customerId:customer.id,
             policyId:policy.id,
             date:start.toISOString(),
             method:'item',
             amount:0,
-            itemId:receipt.itemId || tier.itemId || '',
-            itemName:receipt.itemName || tier.itemName || '',
-            itemQty:Number(receipt.quantity || tier.itemQty || 0),
-            notes:`Detected from Torn item log${receipt.logId ? ` ${receipt.logId}` : ''}.`,
-            sourceLogId:receipt.logId,
+            itemId:String(receipt.itemId || tier.itemId || ''),
+            itemName:String(receipt.itemName || tier.itemName || 'Item'),
+            itemQty:paidQty,
+            notes:`Detected from Torn Item receive log${receipt.logId ? ` ${receipt.logId}` : ''}${receipt.transferMessage ? ` — ${receipt.transferMessage}` : ''}.`,
+            sourceLogId:String(receipt.logId || ''),
             createdAt:nowISO()
-        });
+        };
 
+        state.payments.push(payment);
+
+        // 4) Only mark the log processed after every local record exists.
         markItemLogProcessed(receipt.logId);
         saveAll();
 
-        return {customer,policy};
+        return {
+            customer,
+            policy,
+            payment,
+            customerCreated
+        };
     }
 
     function itemReceiptModal(receipt, matches, onDone) {
@@ -1305,19 +1348,45 @@
         };
 
         modal.el.querySelector('#receipt-create').onclick=()=>{
+            const createBtn=modal.el.querySelector('#receipt-create');
             const tier=getTier(modal.el.querySelector('#receipt-tier').value);
-            if(!tier)return alert('Choose a matching tier.');
 
-            const created=createPolicyFromItemReceipt(receipt,tier);
-            modal.close();
+            if(!tier){
+                alert('Choose a matching insurance tier first.');
+                return;
+            }
 
-            alert(
-                `${created.customer.name} is now covered by ${tier.name}.\n\n` +
-                `The item payment has also been recorded and linked to the policy.`
-            );
+            createBtn.disabled=true;
+            createBtn.textContent='Creating…';
 
-            renderDashboard(overlay.querySelector('.hji-body'));
-            onDone?.();
+            try{
+                const created=createPolicyFromItemReceipt(receipt,tier);
+
+                modal.close();
+
+                alert(
+                    `${created.customerCreated ? 'Customer added and policy created.' : 'Policy created.'}\n\n` +
+                    `${created.customer.name} [${created.customer.tornId || 'ID unavailable'}]\n` +
+                    `${tier.name}\n` +
+                    `${created.payment.itemQty}x ${created.payment.itemName}\n\n` +
+                    `The payment is recorded and linked to the new policy.`
+                );
+
+                renderDashboard(overlay.querySelector('.hji-body'));
+                onDone?.();
+
+            }catch(e){
+                console.error('[HJI Manager] Could not create policy from item receipt:',e);
+                createBtn.disabled=false;
+                createBtn.textContent=receipt.senderId || receipt.senderName
+                    ? 'Add customer + policy'
+                    : 'Create policy';
+
+                alert(
+                    `Could not create the customer/policy.\n\n${e.message}\n\n` +
+                    `The item log has not been marked as processed, so you can try again.`
+                );
+            }
         };
     }
 
@@ -1358,7 +1427,7 @@
                 to: now,
                 firstRun: false,
                 recovery: true,
-                reason: 'Automatic scanner recovery backfill'
+                reason: 'Automatic 30-day scanner recovery backfill'
             };
         }
 
@@ -1640,14 +1709,14 @@
         body.innerHTML=`
           <div class="hji-toolbar">
             <button class="hji-btn good" id="hji-scan-items">↻ Scan item payments</button>
-            <button class="hji-btn" id="hji-rescan-items-7d">↺ Rescan last 7 days</button>
+            <button class="hji-btn" id="hji-rescan-items-30d">↺ Rescan last 30 days</button>
           </div>
 
           <div class="hji-help">
             <strong>Incoming item-payment scan</strong>
             <p>Checks Torn's <b>Item receive</b> log (4103) for direct item transfers that match your configured tier item ID/name and quantity. You confirm every match before HJI creates a customer, policy or payment.</p>
-            <p>First scan looks back <b>7 days</b>. Later scans start from the <b>last successful check</b> with a 5-minute overlap, and HJI remembers processed log IDs to prevent duplicates.</p>
-            <p><b>Rescan last 7 days</b> is a recovery tool for older transfers that were missed by a previous scanner version. Already processed log IDs are still ignored, so it will not duplicate accepted payments.</p>
+            <p>First scan looks back <b>30 days</b>. Later scans start from the <b>last successful check</b> with a 5-minute overlap, and HJI remembers processed log IDs to prevent duplicates.</p>
+            <p><b>Rescan last 30 days</b> is a recovery tool for older transfers that were missed by a previous scanner version. Already processed log IDs are still ignored, so it will not duplicate accepted payments.</p>
             <p><b>Watching for:</b> ${itemScanFilterSummaryHtml()}</p>
             <p class="hji-muted">Only incoming items configured on active tiers are considered possible insurance payments. Other incoming items are ignored.</p>
             <p><b>Last successful item scan:</b> ${esc(lastItemScan)}</p>
@@ -1725,9 +1794,9 @@
           </div>`;
 
         body.querySelector('#hji-scan-items').onclick=()=>scanItemPayments();
-        body.querySelector('#hji-rescan-items-7d').onclick=()=>{
-            if(!confirm('Rescan the last 7 days of Torn Item receive logs?\n\nAlready processed transfers will be ignored.')) return;
-            scanItemPayments(7);
+        body.querySelector('#hji-rescan-items-30d').onclick=()=>{
+            if(!confirm('Rescan the last 30 days of Torn Item receive logs?\n\nAlready processed transfers will be ignored.')) return;
+            scanItemPayments(30);
         };
     }
 
