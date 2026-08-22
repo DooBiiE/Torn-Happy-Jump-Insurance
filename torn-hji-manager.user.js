@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.7
+// @version      0.4.8
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.7';
+    const VERSION = '0.4.8';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -755,25 +755,85 @@
         }
     }
 
+    function itemPaymentTotals() {
+        const totals = new Map();
+
+        for (const p of normalizeCollection(state.payments, 'payments')) {
+            if (p?.method !== 'item') continue;
+
+            const name = String(p.itemName || '').trim() || 'Unnamed item';
+            const qty = Number(p.itemQty || 0);
+
+            totals.set(name, (totals.get(name) || 0) + qty);
+        }
+
+        return [...totals.entries()]
+            .map(([name, qty]) => ({name, qty}))
+            .sort((a, b) => b.qty - a.qty || a.name.localeCompare(b.name));
+    }
+
+    function itemPaymentSummaryHtml() {
+        const items = itemPaymentTotals();
+
+        if (!items.length) {
+            return '<div class="hji-muted">No item payments recorded yet.</div>';
+        }
+
+        return items.map(item =>
+            `<div class="hji-field" style="margin-bottom:6px"><small>${esc(item.name)}</small><strong>${esc(item.qty)}</strong></div>`
+        ).join('');
+    }
+
     function renderDashboard(body) {
-        const statuses = state.policies.map(policyStatus).map(x=>x[0]);
-        const active = statuses.filter(x=>x==='Active').length;
-        const due = statuses.filter(x=>x==='Due soon').length;
-        const expired = statuses.filter(x=>x==='Expired').length;
-        const pendingClaims = normalizeCollection(state.claims, 'claims').filter(c=>c?.status==='submitted').length;
-        const monthAgo = Date.now()-30*86400000;
-        const revenue = state.payments.filter(p=>new Date(p.date).getTime()>=monthAgo && p.method==='cash').reduce((s,p)=>s+Number(p.amount||0),0);
-        body.innerHTML = `
-        <div class="hji-grid">
-          <div class="hji-card">Active policies<b>${active}</b></div>
-          <div class="hji-card">Due soon<b>${due}</b></div>
-          <div class="hji-card">Expired<b>${expired}</b></div>
-          <div class="hji-card">Open claims<b>${pendingClaims}</b></div>
-        </div>
-        <div style="height:10px"></div>
-        <div class="hji-card">Cash payments recorded in last 30 days<b>$${money(revenue)}</b></div>
-        <div style="height:10px"></div>
-        <div class="hji-card"><strong>Quick start</strong><p>1. Set provider ID/API key in Settings. 2. Edit Tiers. 3. Add a customer. 4. Create a policy. 5. Use “Scan Torn Mail” in Claims to import structured client claims.</p></div>`;
+        const activePolicies = state.policies.filter(p=>policyStatus(p)[0]==='Active').length;
+        const dueSoon = state.policies.filter(p=>policyStatus(p)[0]==='Due soon').length;
+        const openClaims = state.claims.filter(c=>!['rejected','closed','paid'].includes(c.status)).length;
+        const cashReceived = state.payments
+            .filter(p=>p.method==='cash')
+            .reduce((sum,p)=>sum+Number(p.amount||0),0);
+
+        const itemTotals = itemPaymentTotals();
+        const totalItemUnits = itemTotals.reduce((sum,item)=>sum+Number(item.qty||0),0);
+
+        body.innerHTML=`
+          <div class="hji-grid">
+            <div class="hji-card">Customers<b>${state.customers.length}</b></div>
+            <div class="hji-card">Active policies<b>${activePolicies}</b></div>
+            <div class="hji-card">Due soon<b>${dueSoon}</b></div>
+            <div class="hji-card">Open claims<b>${openClaims}</b></div>
+          </div>
+
+          <div class="hji-grid" style="margin-top:10px">
+            <div class="hji-card">
+              <strong>Cash payments received</strong>
+              <b>$${money(cashReceived)}</b>
+              <div class="hji-muted">${state.payments.filter(p=>p.method==='cash').length} cash payment${state.payments.filter(p=>p.method==='cash').length===1?'':'s'}</div>
+            </div>
+
+            <div class="hji-card">
+              <strong>Item payments received</strong>
+              <b>${totalItemUnits}</b>
+              <div class="hji-muted">${state.payments.filter(p=>p.method==='item').length} item payment${state.payments.filter(p=>p.method==='item').length===1?'':'s'}</div>
+            </div>
+          </div>
+
+          <div class="hji-card" style="margin-top:10px">
+            <strong>Item payment breakdown</strong>
+            <div style="margin-top:8px">
+              ${itemPaymentSummaryHtml()}
+            </div>
+          </div>
+
+          <div class="hji-card">
+            <strong>Provider</strong>
+            <p>${esc(state.settings.providerName||'Not configured')} ${state.settings.providerId?`[${esc(state.settings.providerId)}]`:''}</p>
+            <div class="hji-muted">Configure this in Settings. Client setup codes use this identity.</div>
+          </div>
+
+          <div class="hji-card">
+            <strong>Quick notes</strong>
+            <p>Use Policies for cover status and renewals, Payments for cash/item records, and Claims for payout handling and Torn Mail sync.</p>
+          </div>`;
     }
 
     function renderCustomers(body) {
