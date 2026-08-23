@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.25
+// @version      0.4.26
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.25';
+    const VERSION = '0.4.26';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -897,105 +897,156 @@
         const category = String(log.category ?? log.details?.category ?? '').trim();
         const data = log.data && typeof log.data === 'object' ? log.data : {};
 
-        // This scanner is deliberately for Torn's direct Item receive log.
         if (logType && logType !== ITEM_RECEIVE_LOG_ID) return [];
-        if (title && !/^item receive$/i.test(title) && !/sent .* to you/i.test(title)) {
-            return [];
-        }
 
+        const senderRaw = data.sender;
         const senderId = String(
-            data.sender?.id ??
-            data.sender ??
+            (senderRaw && typeof senderRaw === 'object'
+                ? (senderRaw.id ?? senderRaw.user_id ?? senderRaw.player_id)
+                : senderRaw) ??
             data.sender_id ??
-            data.from?.id ??
-            data.from ??
+            data.from_id ??
             ''
         ).trim();
 
-        let senderName = String(
-            data.sender?.name ??
+        const senderName = String(
+            (senderRaw && typeof senderRaw === 'object'
+                ? (senderRaw.name ?? senderRaw.username)
+                : '') ??
             data.sender_name ??
-            data.from?.name ??
             ''
         ).trim();
 
-        const transferMessage = String(
-            data.message ??
-            log.message ??
-            ''
-        ).trim();
+        const transferMessage = String(data.message ?? log.message ?? '').trim();
 
         if (senderId && String(senderId) === String(state.settings.providerId || '')) {
             return [];
         }
 
-        const items = data.items && typeof data.items === 'object'
-            ? data.items
-            : {};
-
         const receipts = [];
+        const items = data.items;
 
-        for (const [rawItemId, rawValue] of Object.entries(items)) {
-            let quantity = 0;
+        const pushReceipt = (itemId, itemName, qty) => {
+            const quantity = Number(qty || 0);
+            const id = String(itemId ?? '').trim();
+            const name = String(itemName ?? '').trim();
 
-            if (Array.isArray(rawValue)) {
-                // Historical 4103 shape: { "261": [68, 0] }
-                quantity = Number(rawValue[0] || 0);
-            } else if (rawValue && typeof rawValue === 'object') {
-                quantity = Number(
-                    rawValue.quantity ??
-                    rawValue.qty ??
-                    rawValue.amount ??
-                    rawValue.count ??
-                    0
-                );
-            } else {
-                // Current/common shape: { "175": 1 }
-                quantity = Number(rawValue || 0);
-            }
-
-            if (!Number.isFinite(quantity) || quantity <= 0) continue;
+            if ((!id && !name) || !Number.isFinite(quantity) || quantity <= 0) return;
 
             receipts.push({
                 logId:String(log.id ?? ''),
                 timestamp:Number(log.timestamp || 0),
                 title:title || 'Item receive',
                 category:category || 'Item sending',
-                itemId:String(rawItemId || ''),
-                itemName:'',
+                itemId:id,
+                itemName:name,
                 quantity,
                 senderId,
                 senderName,
                 transferMessage,
                 raw:log
             });
-        }
+        };
 
-        // Fallback for unusual/legacy shapes where items was not an object map.
-        if (!receipts.length) {
-            const entries = deepEntries({data, params:log.params});
-            const itemId = candidateString(entries, /^(item_id|itemid)$/i);
-            const itemName = candidateString(entries, /^(item_name|itemname)$/i);
-            const quantity = candidateNumber(entries, /^(quantity|qty|item_quantity|amount|count)$/i);
-            const fallbackSenderId = senderId || candidateString(entries, /^(sender_id|senderid|from_id|fromid|player_id|user_id)$/i);
-            const fallbackSenderName = senderName || candidateString(entries, /^(sender_name|sendername|from_name|fromname|player_name|username)$/i);
+        if (Array.isArray(items)) {
+            // Newer API shapes may return an array:
+            // [{id:175, qty:1}], [{item_id:175, quantity:1}], etc.
+            for (const item of items) {
+                if (!item || typeof item !== 'object') continue;
 
-            if ((itemId || itemName) && quantity > 0 && (fallbackSenderId || fallbackSenderName)) {
-                receipts.push({
-                    logId:String(log.id ?? ''),
-                    timestamp:Number(log.timestamp || 0),
-                    title:title || 'Item receive',
-                    category:category || 'Item sending',
-                    itemId:String(itemId || ''),
-                    itemName:String(itemName || ''),
-                    quantity:Number(quantity),
-                    senderId:String(fallbackSenderId || ''),
-                    senderName:String(fallbackSenderName || ''),
-                    transferMessage,
-                    raw:log
-                });
+                const nested = item.item && typeof item.item === 'object'
+                    ? item.item
+                    : {};
+
+                pushReceipt(
+                    item.id ??
+                    item.item_id ??
+                    item.itemId ??
+                    nested.id ??
+                    nested.item_id ??
+                    '',
+                    item.name ??
+                    item.item_name ??
+                    item.itemName ??
+                    nested.name ??
+                    nested.item_name ??
+                    '',
+                    item.qty ??
+                    item.quantity ??
+                    item.amount ??
+                    item.count ??
+                    nested.qty ??
+                    nested.quantity ??
+                    0
+                );
+            }
+
+        } else if (items && typeof items === 'object') {
+            // Legacy/common 4103 shape:
+            // {"175":1} or {"261":[68,0]}
+            for (const [rawKey, rawValue] of Object.entries(items)) {
+                if (rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)) {
+                    const nested = rawValue.item && typeof rawValue.item === 'object'
+                        ? rawValue.item
+                        : {};
+
+                    pushReceipt(
+                        rawValue.id ??
+                        rawValue.item_id ??
+                        rawValue.itemId ??
+                        nested.id ??
+                        rawKey,
+                        rawValue.name ??
+                        rawValue.item_name ??
+                        rawValue.itemName ??
+                        nested.name ??
+                        '',
+                        rawValue.qty ??
+                        rawValue.quantity ??
+                        rawValue.amount ??
+                        rawValue.count ??
+                        nested.qty ??
+                        nested.quantity ??
+                        0
+                    );
+
+                } else if (Array.isArray(rawValue)) {
+                    pushReceipt(rawKey, '', rawValue[0]);
+
+                } else {
+                    pushReceipt(rawKey, '', rawValue);
+                }
             }
         }
+
+        // Generic fallback for future/odd shapes.
+        if (!receipts.length) {
+            const entries = deepEntries({data, params:log.params});
+
+            const itemId = candidateString(
+                entries,
+                /^(item_id|itemid|id)$/i
+            );
+
+            const itemName = candidateString(
+                entries,
+                /^(item_name|itemname|name)$/i
+            );
+
+            const quantity = candidateNumber(
+                entries,
+                /^(quantity|qty|item_quantity|amount|count)$/i
+            );
+
+            if ((itemId || itemName) && quantity > 0) {
+                pushReceipt(itemId, itemName, quantity);
+            }
+        }
+
+        console.info(
+            `[HJI Manager] Parsed 4103 log ${String(log.id || '')}: ${receipts.length} item receipt(s)`,
+            receipts
+        );
 
         return receipts;
     }
@@ -1041,10 +1092,11 @@
     }
 
     async function resolveReceiptItem(receipt) {
-        if (receipt.itemName || !receipt.itemId) return receipt;
+        if (receipt.itemName || !receipt.itemId || receipt.itemId === '0') {
+            return receipt;
+        }
 
-        // First use configured tiers. This avoids an extra API request when the
-        // provider has supplied the optional Torn Item ID in Tier settings.
+        // Best path: configured Tier Item ID already tells us the name.
         const configured = state.tiers.find(t =>
             String(t.itemId || '').trim() === String(receipt.itemId)
         );
@@ -1054,83 +1106,34 @@
             return receipt;
         }
 
-        // Otherwise resolve the item ID through Torn's item endpoint.
         try {
             const data = await requestApi(
                 `${API_BASE}/torn/${encodeURIComponent(receipt.itemId)}/items`,
                 state.settings.apiKey
             );
+
+            if (data?.error) {
+                throw new Error(
+                    data.error.error ||
+                    data.error.message ||
+                    JSON.stringify(data.error)
+                );
+            }
+
             const found = extractItemIdentity(data, receipt.itemId);
-            if (found?.name) receipt.itemName = found.name;
+            if (found?.name) {
+                receipt.itemName = found.name;
+            }
         } catch (e) {
-            console.warn(`[HJI Manager] Could not resolve item ${receipt.itemId}.`, e);
+            // Item-name resolution is optional. A configured item ID can still
+            // match the receipt even when Torn's item lookup fails.
+            console.warn(
+                `[HJI Manager] Could not resolve item ${receipt.itemId}:`,
+                e?.message || e
+            );
         }
 
         return receipt;
-    }
-
-    function activeTierPaymentItems() {
-        const items = [];
-        const seen = new Set();
-
-        for (const tier of normalizeCollection(state.tiers, 'tiers')) {
-            if (!tier || tier.active === false || Number(tier.itemQty || 0) <= 0) continue;
-
-            const itemId = String(tier.itemId || '').trim();
-            const itemName = String(tier.itemName || '').trim();
-
-            if (!itemId && !itemName) continue;
-
-            const key = itemId
-                ? `id:${itemId}`
-                : `name:${normalizeItemName(itemName)}`;
-
-            if (seen.has(key)) continue;
-            seen.add(key);
-
-            items.push({
-                itemId,
-                itemName,
-                tierId:tier.id,
-                tierName:tier.name
-            });
-        }
-
-        return items;
-    }
-
-    function receiptMatchesConfiguredItem(receipt) {
-        const configured = activeTierPaymentItems();
-        if (!configured.length) return false;
-
-        const receiptId = String(receipt?.itemId || '').trim();
-        const receiptName = normalizeItemName(receipt?.itemName || '');
-
-        return configured.some(item => {
-            if (item.itemId && receiptId) {
-                return String(item.itemId) === receiptId;
-            }
-
-            return Boolean(
-                item.itemName &&
-                receiptName &&
-                normalizeItemName(item.itemName) === receiptName
-            );
-        });
-    }
-
-    function itemScanFilterSummaryHtml() {
-        const items = activeTierPaymentItems();
-
-        if (!items.length) {
-            return '<span class="hji-expired">No active tier payment items configured</span>';
-        }
-
-        return items.map(item => {
-            const label = item.itemName || `Item ID ${item.itemId}`;
-            const id = item.itemId ? ` [ID ${item.itemId}]` : '';
-            return `<span class="hji-pill">${esc(label)}${esc(id)}</span>`;
-        }).join(' ');
     }
 
     function tierMatchesReceipt(tier, receipt) {
