@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.27
+// @version      0.4.28
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.27';
+    const VERSION = '0.4.28';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -1129,8 +1129,8 @@
         } catch (e) {
             // Item-name resolution is optional. A configured item ID can still
             // match the receipt even when Torn's item lookup fails.
-            console.warn(
-                `[HJI Manager] Could not resolve item ${receipt.itemId}:`,
+            console.info(
+                `[HJI Manager] Optional item-name lookup unavailable for ${receipt.itemId}:`,
                 e?.message || e
             );
         }
@@ -1138,7 +1138,27 @@
         return receipt;
     }
 
+    function migrateKnownTierItemIds() {
+        let changed=false;
+
+        for(const tier of normalizeCollection(state.tiers,'tiers')){
+            if(!tier || String(tier.itemId||'').trim()) continue;
+
+            const name=normalizeItemName(tier.itemName||'');
+
+            if(name==='xanax'){
+                tier.itemId='206';
+                changed=true;
+            }
+        }
+
+        if(changed) saveAll();
+        return changed;
+    }
+
     function activeTierPaymentItems() {
+        migrateKnownTierItemIds();
+
         const items = [];
         const seen = new Set();
 
@@ -1165,6 +1185,22 @@
         }
 
         return items;
+    }
+
+    function receiptMatchesConfiguredItemId(receipt) {
+        const receiptId=String(receipt?.itemId||'').trim();
+        if(!receiptId) return false;
+
+        return activeTierPaymentItems().some(item =>
+            String(item.itemId||'').trim() &&
+            String(item.itemId).trim()===receiptId
+        );
+    }
+
+    function hasConfiguredTierItemIds() {
+        return activeTierPaymentItems().some(item =>
+            String(item.itemId||'').trim()
+        );
     }
 
     function receiptMatchesConfiguredItem(receipt) {
@@ -1916,13 +1952,38 @@
                     return;
                 }
 
-                await resolveReceiptItem(receipt);
+                const directIdMatch=receiptMatchesConfiguredItemId(receipt);
 
-                // Only consider items currently configured as valid payment items
-                // on active insurance tiers. Unrelated gifts/transfers are ignored.
-                if(!receiptMatchesConfiguredItem(receipt)){
-                    showNext();
-                    return;
+                if(!directIdMatch){
+                    // If every configured payment item has an Item ID and this receipt
+                    // doesn't match one, it is unrelated. Do not waste an API call
+                    // resolving its name.
+                    const configuredItems=activeTierPaymentItems();
+                    const allConfiguredById=
+                        configuredItems.length>0 &&
+                        configuredItems.every(item=>String(item.itemId||'').trim());
+
+                    if(allConfiguredById){
+                        showNext();
+                        return;
+                    }
+
+                    // Legacy/name-only tiers may still need an item-name lookup.
+                    await resolveReceiptItem(receipt);
+
+                    if(!receiptMatchesConfiguredItem(receipt)){
+                        showNext();
+                        return;
+                    }
+                }else{
+                    // Populate the name locally from the matching tier if Torn log
+                    // only supplied the ID.
+                    const configured=activeTierPaymentItems().find(item =>
+                        String(item.itemId||'')===String(receipt.itemId||'')
+                    );
+                    if(!receipt.itemName && configured?.itemName){
+                        receipt.itemName=configured.itemName;
+                    }
                 }
 
                 await resolveReceiptSender(receipt);
@@ -2052,7 +2113,7 @@
             <p>First scan looks back <b>3 days</b>. Later scans start from the <b>last successful check</b> with a 5-minute overlap, and HJI remembers processed log IDs to prevent duplicates.</p>
             <p><b>Rescan last 3 days</b> is a recovery tool. It deliberately includes previously processed log IDs so older scanner mistakes can be reviewed again. Nothing is created unless you confirm the receipt.</p>
             <p><b>Watching for:</b> ${itemScanFilterSummaryHtml()}</p>
-            <p class="hji-muted">Only incoming items configured on active tiers are considered possible insurance payments. Other incoming items are ignored.</p>
+            <p class="hji-muted">Only incoming items configured on active tiers are considered possible insurance payments. HJI matches Tier Item IDs first, so unrelated incoming items are ignored without extra item lookups.</p>
             <p><b>Last successful item scan:</b> ${esc(lastItemScan)}</p>
           </div>
 
@@ -2913,7 +2974,7 @@
         <div class="hji-help">
           <strong>Tier management</strong>
           <p>You can add or edit insurance tiers to match the provider's offering. Tier deletion is available inside Edit to reduce accidental clicks.</p>
-          <p>A tier that is still linked to an existing policy cannot be deleted. This protects historical policy and payment records.</p><p>For automatic item-payment matching, set the alternative item name and quantity. Adding the Torn item ID as well makes matching more reliable.</p>
+          <p>A tier that is still linked to an existing policy cannot be deleted. This protects historical policy and payment records.</p><p>For automatic item-payment matching, set the alternative item name and quantity. Adding the Torn Item ID is recommended because HJI can then match receipts directly without needing extra API item permissions. Existing Xanax tiers are automatically set to Item ID 206.</p>
         </div>
 
         <div class="hji-table-wrap"><table class="hji-table">
@@ -2953,7 +3014,7 @@
           <label>Cash price<input id="tier-cash" inputmode="decimal" value="${formatMoneyInput(existing?.cashPrice??0)}"></label>
           <label>Enabled<select id="tier-active"><option value="1">Yes</option><option value="0" ${existing?.active===false?'selected':''}>No</option></select></label>
           <label>Alternative item<input id="tier-item" value="${esc(existing?.itemName||'')}"></label>
-          <label>Alternative item ID<input id="tier-item-id" inputmode="numeric" value="${esc(existing?.itemId||'')}" placeholder="Optional, improves log matching"></label>
+          <label>Alternative item ID<input id="tier-item-id" inputmode="numeric" value="${esc(existing?.itemId||'')}" placeholder="Recommended for item scanner"></label>
           <label>Item quantity<input id="tier-qty" inputmode="numeric" value="${esc(existing?.itemQty??0)}"></label>
         </div>`;
         bindMoneyInput(modal.el.querySelector('#tier-cash'));
