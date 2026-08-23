@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.28
+// @version      0.4.30
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.28';
+    const VERSION = '0.4.30';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -30,6 +30,12 @@
     const ITEM_SCAN_OVERLAP_SECONDS = 5 * 60;
     const ITEM_SCAN_PAGE_LIMIT = 100;
     const ITEM_SCANNER_SCHEMA_VERSION = 6;
+    const MONEY_TRANSFER_CATEGORY_ID = 112;
+    const CASH_SCAN_FIRST_LOOKBACK_SECONDS = 3 * 24 * 60 * 60;
+    const CASH_SCAN_OVERLAP_SECONDS = 5 * 60;
+    const CASH_SCAN_PAGE_LIMIT = 100;
+    const CASH_SCANNER_SCHEMA_VERSION = 1;
+
 
 
     function decodeStoredValue(value, fallback) {
@@ -455,7 +461,11 @@
             lastItemLogScan: null,
             processedItemLogIds: [],
             processedItemScans: [],
-            itemScannerSchemaVersion: 0
+            itemScannerSchemaVersion: 0,
+            lastCashLogScan: null,
+            processedCashLogIds: [],
+            processedCashScans: [],
+            cashScannerSchemaVersion: 0
         };
         const decoded = decodeStoredValue(value, {});
         const out = decoded && typeof decoded === 'object' && !Array.isArray(decoded)
@@ -469,6 +479,13 @@
         out.processedItemScans = Array.isArray(out.processedItemScans)
             ? out.processedItemScans.slice(-500)
             : [];
+        out.processedCashLogIds = Array.isArray(out.processedCashLogIds)
+            ? out.processedCashLogIds.map(String).slice(-1000)
+            : [];
+        out.processedCashScans = Array.isArray(out.processedCashScans)
+            ? out.processedCashScans.slice(-500)
+            : [];
+        out.cashScannerSchemaVersion = Number(out.cashScannerSchemaVersion || 0);
 
         return out;
     }
@@ -595,7 +612,17 @@
         .hji-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.hji-form label{display:flex;flex-direction:column;gap:5px;color:#ddd;font-weight:600}.hji-form .wide{grid-column:1/-1}
         .hji-form input,.hji-form select,.hji-form textarea,.hji-modal input,.hji-modal select,.hji-modal textarea{box-sizing:border-box;width:100%;background:var(--hji-input)!important;color:#f2f2f2!important;border:1px solid #5a5a5a;border-radius:4px;padding:8px;-webkit-text-fill-color:#f2f2f2!important;caret-color:#fff}.hji-form textarea{min-height:80px}.hji-form input::placeholder,.hji-form textarea::placeholder{color:#8e8e8e!important;-webkit-text-fill-color:#8e8e8e!important}.hji-form select option,.hji-modal select option{background:#222;color:#f2f2f2}
         .hji-modal-bg{position:absolute;inset:0;background:#000b;display:flex;align-items:center;justify-content:center;padding:12px;z-index:5}.hji-modal{width:min(620px,94%);max-height:88%;overflow:auto;background:#292929;color:var(--hji-text);border:1px solid #666;border-radius:6px;padding:14px}.hji-modal h3{margin-top:0;color:#fff}.hji-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
-        .hji-muted{color:#aaa!important;font-size:12px}.hji-pill{display:inline-block;padding:3px 7px;border-radius:999px;background:#444;color:#ddd}.hji-info-tip{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;border:1px solid #666;background:#3a3a3a;color:#fff;font-size:12px;font-weight:700;cursor:pointer;vertical-align:middle;margin-left:4px;user-select:none}
+        .hji-muted{color:#aaa!important;font-size:12px}.hji-pill{display:inline-block;padding:3px 7px;border-radius:999px;background:#444;color:#ddd}.hji-scanlog-table{width:100%;border-collapse:collapse;table-layout:fixed}
+        .hji-scanlog-table th,.hji-scanlog-table td{text-align:center;vertical-align:middle;padding:9px 7px;border-bottom:1px solid #4b4b4b;word-break:break-word}
+        .hji-scanlog-table th{font-weight:700;background:#3a3a3a;color:#f2f2f2}
+        .hji-scanlog-table td{background:#2b2b2b}
+        .hji-scanlog-table tr:last-child td{border-bottom:none}
+        .hji-scanlog-table .hji-scanlog-sender{min-width:120px}
+        .hji-scanlog-table .hji-scanlog-item{min-width:90px}
+        .hji-scanlog-table .hji-scanlog-action{min-width:90px}
+        .hji-scanlog-wrap{overflow-x:auto;border:1px solid #4a4a4a;border-radius:6px}
+        .hji-scanlog-note{max-width:220px;white-space:normal}
+        .hji-info-tip{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;border:1px solid #666;background:#3a3a3a;color:#fff;font-size:12px;font-weight:700;cursor:pointer;vertical-align:middle;margin-left:4px;user-select:none}
         .hji-info-tip:active{background:#555}
         .hji-help{background:#252d33;border:1px solid #465966;border-radius:5px;padding:10px;margin:8px 0 12px;color:#e1e1e1}.hji-help strong{color:#fff}.hji-help p{margin:5px 0}.hji-help details{margin-top:6px}.hji-help summary{cursor:pointer;font-weight:700;color:#dceaf3}.hji-info{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;background:#59636d;color:#fff;font-size:11px;font-weight:bold;cursor:help;margin-left:4px}
         .hji-resize-grip{position:absolute;right:0;bottom:0;width:30px;height:30px;z-index:20;cursor:nwse-resize;touch-action:none}.hji-resize-grip:after{content:'↘';position:absolute;right:5px;bottom:3px;color:#bbb;font-size:18px}
@@ -1681,29 +1708,53 @@
             ${migration.created || migration.unresolved ? `<p><b>Legacy migration:</b> ${migration.created} old processed transfer${migration.created===1?'':'s'} restored to the audit log · ${migration.unresolved} unresolved transfer${migration.unresolved===1?'':'s'} reopened for scanning.</p>` : ''}
           </div>
 
-          <div class="hji-table-wrap"><table class="hji-table">
-            <thead><tr><th>Date</th><th>Sender</th><th>Item</th><th>Message</th><th>Action</th><th></th></tr></thead>
-            <tbody>
-              ${records.map((r,i)=>`
+          <div class="hji-scanlog-wrap">
+            <table class="hji-scanlog-table">
+              <colgroup>
+                <col style="width:18%">
+                <col style="width:22%">
+                <col style="width:16%">
+                <col style="width:20%">
+                <col style="width:14%">
+                <col style="width:10%">
+              </colgroup>
+              <thead>
                 <tr>
-                  <td>${r.timestamp ? new Date(r.timestamp*1000).toLocaleString('en-GB') : '—'}</td>
-                  <td>${esc(r.senderName||'Unknown')} ${r.senderId?`[${esc(r.senderId)}]`:''}</td>
-                  <td>${esc(r.quantity||0)}x ${esc(r.itemName||`Item ${r.itemId||''}`)}</td>
-                  <td>${esc(r.transferMessage||'')}</td>
-                  <td>${esc(({
-                        created:'Created policy',
-                        ignored:'Ignored',
-                        later:'Later',
-                        legacy_processed:'Legacy processed'
-                    })[r.action] || r.action || '')}</td>
-                  <td>
-                    ${r.action==='created'
-                        ? `<span class="hji-muted">Created</span>`
-                        : `<button class="hji-btn" data-reopen-scan="${i}">Reopen</button>`}
-                  </td>
-                </tr>`).join('') || '<tr><td colspan="6">No processed item scans recorded yet.</td></tr>'}
-            </tbody>
-          </table></div>`;
+                  <th>Date</th>
+                  <th>Sender</th>
+                  <th>Item</th>
+                  <th>Message</th>
+                  <th>Action</th>
+                  <th>Manage</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${records.map((r,i)=>`
+                  <tr>
+                    <td>${r.timestamp ? new Date(r.timestamp*1000).toLocaleString('en-GB') : '—'}</td>
+                    <td class="hji-scanlog-sender">
+                      <strong>${esc(r.senderName||'Unknown')}</strong>
+                      ${r.senderId?`<div class="hji-muted">[${esc(r.senderId)}]</div>`:''}
+                    </td>
+                    <td class="hji-scanlog-item">
+                      <strong>${esc(r.quantity||0)}x ${esc(r.itemName||`Item ${r.itemId||''}`)}</strong>
+                    </td>
+                    <td class="hji-scanlog-note">${esc(r.transferMessage||'—')}</td>
+                    <td class="hji-scanlog-action">${esc(({
+                          created:'Created policy',
+                          ignored:'Ignored',
+                          later:'Later',
+                          legacy_processed:'Legacy processed'
+                      })[r.action] || r.action || '')}</td>
+                    <td>
+                      ${r.action==='created'
+                          ? `<span class="hji-muted">Done</span>`
+                          : `<button class="hji-btn" data-reopen-scan="${i}">Reopen</button>`}
+                    </td>
+                  </tr>`).join('') || '<tr><td colspan="6">No processed item scans recorded yet.</td></tr>'}
+              </tbody>
+            </table>
+          </div>`;
 
         modal.actions.innerHTML='<button class="hji-btn" data-close>Close</button>';
         modal.el.querySelector('[data-close]').onclick=modal.close;
@@ -1725,6 +1776,701 @@
 
                 modal.close();
                 itemReceiptModal(receipt,matches,()=>{
+                    renderDashboard(overlay.querySelector('.hji-body'));
+                });
+            };
+        });
+    }
+
+    function activeTierCashPrices() {
+        const rows=[];
+        for(const tier of normalizeCollection(state.tiers,'tiers')){
+            if(!tier || tier.active===false) continue;
+            const price=Number(tier.cashPrice || 0);
+            if(!Number.isFinite(price) || price<=0) continue;
+            rows.push({
+                tierId:String(tier.id || ''),
+                tierName:String(tier.name || ''),
+                price
+            });
+        }
+        return rows;
+    }
+
+    function cashScanFilterSummaryHtml() {
+        const rows=activeTierCashPrices();
+        if(!rows.length){
+            return '<span class="hji-expired">No active tier cash prices configured</span>';
+        }
+
+        const unique=[];
+        const seen=new Set();
+        for(const row of rows){
+            const key=String(Math.round(row.price*100));
+            if(seen.has(key)) continue;
+            seen.add(key);
+            unique.push(row);
+        }
+
+        return unique
+            .sort((a,b)=>a.price-b.price)
+            .map(row=>`<span class="hji-pill">$${money(row.price)}</span>`)
+            .join(' ');
+    }
+
+    function cashAmountEquals(a,b){
+        return Math.round(Number(a||0)*100)===Math.round(Number(b||0)*100);
+    }
+
+    function cashReceiptMatchesConfiguredAmount(receipt){
+        return activeTierCashPrices().some(row =>
+            cashAmountEquals(row.price, receipt?.amount)
+        );
+    }
+
+    function cashTiersForReceipt(receipt){
+        return state.tiers.filter(t =>
+            t &&
+            t.active!==false &&
+            Number(t.cashPrice||0)>0 &&
+            cashAmountEquals(t.cashPrice, receipt?.amount)
+        );
+    }
+
+    function lastSuccessfulCashScanUnix(){
+        const value=state.settings.lastCashLogScan;
+        if(!value) return 0;
+        const ms=new Date(value).getTime();
+        return Number.isFinite(ms) ? Math.floor(ms/1000) : 0;
+    }
+
+    function cashScanWindow(forceLookbackDays=0){
+        const now=Math.floor(Date.now()/1000);
+
+        if(forceLookbackDays>0){
+            return {
+                from:now-(Number(forceLookbackDays)*24*60*60),
+                to:now,
+                recovery:true,
+                reason:`Manual ${forceLookbackDays}-day cash rescan`
+            };
+        }
+
+        const last=lastSuccessfulCashScanUnix();
+        const schema=Number(state.settings.cashScannerSchemaVersion||0);
+
+        if(schema<CASH_SCANNER_SCHEMA_VERSION || !last){
+            return {
+                from:now-CASH_SCAN_FIRST_LOOKBACK_SECONDS,
+                to:now,
+                recovery:schema<CASH_SCANNER_SCHEMA_VERSION,
+                reason:schema<CASH_SCANNER_SCHEMA_VERSION
+                    ? 'Automatic 3-day cash scanner backfill'
+                    : 'First cash scan'
+            };
+        }
+
+        return {
+            from:Math.max(0,last-CASH_SCAN_OVERLAP_SECONDS),
+            to:now,
+            recovery:false,
+            reason:'Since last successful cash scan'
+        };
+    }
+
+    async function fetchMoneyReceiveLogs(fromUnix,toUnix){
+        const all=[];
+        const seen=new Set();
+        let cursorTo=Number(toUnix);
+        let page=0;
+
+        while(cursorTo>=fromUnix && page<50){
+            page++;
+
+            // Category 112 contains money-transfer logs. We request the category
+            // then keep only "Money receive" entries locally.
+            const url=
+                `${API_BASE}/user`+
+                `?selections=log`+
+                `&cat=${MONEY_TRANSFER_CATEGORY_ID}`+
+                `&from=${encodeURIComponent(fromUnix)}`+
+                `&to=${encodeURIComponent(cursorTo)}`+
+                `&limit=${CASH_SCAN_PAGE_LIMIT}`;
+
+            const data=await requestApi(url,state.settings.apiKey);
+
+            if(data?.error){
+                throw new Error(
+                    data.error.error ||
+                    data.error.message ||
+                    JSON.stringify(data.error)
+                );
+            }
+
+            const raw=getLogArray(data)
+                .sort((a,b)=>Number(b.timestamp||0)-Number(a.timestamp||0));
+
+            console.info(
+                `[HJI Manager] Torn cash-log page ${page}: ${raw.length} category-${MONEY_TRANSFER_CATEGORY_ID} log(s) returned`,
+                data
+            );
+
+            if(!raw.length) break;
+
+            const moneyReceive=raw.filter(log=>{
+                const title=String(log?.title ?? log?.details?.title ?? '').trim();
+                return /^money receive$/i.test(title) || /^money received$/i.test(title);
+            });
+
+            for(const log of moneyReceive){
+                const id=String(log?.id ?? '');
+                const key=id || `${log?.timestamp||''}:${JSON.stringify(log?.data||{})}`;
+                if(seen.has(key)) continue;
+                seen.add(key);
+                all.push(log);
+            }
+
+            const timestamps=raw
+                .map(log=>Number(log?.timestamp||0))
+                .filter(ts=>Number.isFinite(ts)&&ts>0);
+
+            if(!timestamps.length) break;
+            const oldest=Math.min(...timestamps);
+            if(oldest<=fromUnix) break;
+            if(raw.length<CASH_SCAN_PAGE_LIMIT) break;
+            cursorTo=oldest-1;
+        }
+
+        return all.filter(log=>{
+            const ts=Number(log?.timestamp||0);
+            return ts>=fromUnix && ts<=toUnix;
+        });
+    }
+
+    function parseMoneyReceiveLog(log){
+        if(!log || typeof log!=='object') return null;
+
+        const title=String(log.title ?? log.details?.title ?? '').trim();
+        if(title && !/^money receive(d)?$/i.test(title)) return null;
+
+        const data=log.data && typeof log.data==='object' ? log.data : {};
+        const entries=deepEntries({data,params:log.params});
+
+        const senderRaw=data.sender ?? data.from ?? data.player;
+        let senderId='';
+        let senderName='';
+
+        if(senderRaw && typeof senderRaw==='object'){
+            senderId=String(
+                senderRaw.id ??
+                senderRaw.user_id ??
+                senderRaw.player_id ??
+                ''
+            ).trim();
+            senderName=String(
+                senderRaw.name ??
+                senderRaw.username ??
+                ''
+            ).trim();
+        }else if(senderRaw!==undefined && senderRaw!==null){
+            senderId=String(senderRaw).trim();
+        }
+
+        if(!senderId){
+            senderId=candidateString(
+                entries,
+                /^(sender_id|senderid|from_id|fromid|player_id|user_id)$/i
+            );
+        }
+
+        if(!senderName){
+            senderName=candidateString(
+                entries,
+                /^(sender_name|sendername|from_name|fromname|player_name|username)$/i
+            );
+        }
+
+        let amount=Number(
+            data.money ??
+            data.amount ??
+            data.cash ??
+            data.value ??
+            0
+        );
+
+        if(!Number.isFinite(amount) || amount<=0){
+            amount=candidateNumber(
+                entries,
+                /^(money|amount|cash|value|received|money_received)$/i
+            );
+        }
+
+        const message=String(
+            data.message ??
+            candidateString(entries,/^(message|note|memo)$/i) ??
+            ''
+        ).trim();
+
+        if((!senderId && !senderName) || !Number.isFinite(amount) || amount<=0){
+            console.info('[HJI Manager] Could not parse Money receive log:',log);
+            return null;
+        }
+
+        return {
+            logId:String(log.id ?? ''),
+            timestamp:Number(log.timestamp||0),
+            senderId:String(senderId||''),
+            senderName:String(senderName||''),
+            amount:Number(amount),
+            transferMessage:message,
+            title:title || 'Money receive',
+            raw:log
+        };
+    }
+
+    function processedCashScanRecord(logId){
+        return (state.settings.processedCashScans||[])
+            .find(r=>String(r.logId||'')===String(logId||'')) || null;
+    }
+
+    function markCashLogProcessed(logId){
+        const id=String(logId||'');
+        if(!id) return;
+        const ids=Array.isArray(state.settings.processedCashLogIds)
+            ? state.settings.processedCashLogIds.map(String)
+            : [];
+        if(!ids.includes(id)) ids.push(id);
+        state.settings.processedCashLogIds=ids.slice(-1000);
+        saveAll();
+    }
+
+    function unprocessCashLog(logId){
+        const id=String(logId||'');
+        state.settings.processedCashLogIds=
+            (state.settings.processedCashLogIds||[])
+                .map(String)
+                .filter(x=>x!==id);
+        saveAll();
+    }
+
+    function saveProcessedCashScanRecord(receipt,action,extra={}){
+        state.settings.processedCashScans=Array.isArray(state.settings.processedCashScans)
+            ? state.settings.processedCashScans
+            : [];
+
+        const record={
+            logId:String(receipt?.logId||''),
+            timestamp:Number(receipt?.timestamp||0),
+            senderId:String(receipt?.senderId||''),
+            senderName:String(receipt?.senderName||''),
+            amount:Number(receipt?.amount||0),
+            transferMessage:String(receipt?.transferMessage||''),
+            action:String(action||''),
+            tierId:String(extra.tierId||''),
+            tierName:String(extra.tierName||''),
+            customerId:String(extra.customerId||''),
+            policyId:String(extra.policyId||''),
+            paymentId:String(extra.paymentId||''),
+            processedAt:nowISO(),
+            reopened:Boolean(extra.reopened||false)
+        };
+
+        const idx=state.settings.processedCashScans.findIndex(
+            r=>String(r.logId||'')===record.logId
+        );
+
+        if(idx>=0){
+            state.settings.processedCashScans[idx]={
+                ...state.settings.processedCashScans[idx],
+                ...record
+            };
+        }else{
+            state.settings.processedCashScans.push(record);
+        }
+
+        state.settings.processedCashScans=state.settings.processedCashScans.slice(-500);
+        saveAll();
+    }
+
+    function cashReceiptFromProcessedRecord(record){
+        return {
+            logId:String(record.logId||''),
+            timestamp:Number(record.timestamp||0),
+            senderId:String(record.senderId||''),
+            senderName:String(record.senderName||''),
+            amount:Number(record.amount||0),
+            transferMessage:String(record.transferMessage||''),
+            title:'Recovered Money receive',
+            raw:null,
+            wasPreviouslyProcessed:true,
+            previousAudit:record
+        };
+    }
+
+    function createPolicyFromCashReceipt(receipt,tier){
+        if(!receipt || !tier){
+            throw new Error('Cash receipt or insurance tier is missing.');
+        }
+
+        const senderId=String(receipt.senderId||'').trim();
+        const senderName=String(receipt.senderName||'').trim();
+
+        if(!senderId && !senderName){
+            throw new Error('Could not identify who sent the cash.');
+        }
+
+        let customer=senderId
+            ? state.customers.find(c=>String(c.tornId||'')===senderId)
+            : state.customers.find(c=>
+                String(c.name||'').trim().toLowerCase()===senderName.toLowerCase()
+              );
+
+        let customerCreated=false;
+
+        if(!customer){
+            customer={
+                id:uid('customer'),
+                tornId:senderId,
+                name:senderName || `Torn user ${senderId}`.trim(),
+                notes:'Added automatically from an incoming insurance cash payment.',
+                createdAt:nowISO()
+            };
+            state.customers.push(customer);
+            customerCreated=true;
+        }else{
+            if(!customer.tornId && senderId) customer.tornId=senderId;
+            if((!customer.name || /^Torn user\b/i.test(customer.name)) && senderName){
+                customer.name=senderName;
+            }
+        }
+
+        const start=receipt.timestamp
+            ? new Date(receipt.timestamp*1000)
+            : new Date();
+
+        if(Number.isNaN(start.getTime())){
+            throw new Error('The incoming cash log has an invalid timestamp.');
+        }
+
+        const policy={
+            id:uid('policy'),
+            customerId:customer.id,
+            tierId:tier.id,
+            tierName:tier.name,
+            type:tier.type,
+            startDate:start.toISOString(),
+            endDate:tier.type==='monthly'
+                ? new Date(
+                    start.getTime()+
+                    Number(tier.durationDays||30)*86400000
+                  ).toISOString()
+                : null,
+            status:'active',
+            used:false,
+            createdAt:nowISO(),
+            sourceCashLogId:String(receipt.logId||'')
+        };
+
+        state.policies.push(policy);
+
+        const payment={
+            id:uid('payment'),
+            customerId:customer.id,
+            policyId:policy.id,
+            date:start.toISOString(),
+            method:'cash',
+            amount:Number(receipt.amount||0),
+            itemName:'',
+            itemQty:0,
+            notes:`Detected from Torn Money receive log${receipt.logId?` ${receipt.logId}`:''}${receipt.transferMessage?` — ${receipt.transferMessage}`:''}.`,
+            sourceLogId:String(receipt.logId||''),
+            sourceCashLogId:String(receipt.logId||''),
+            createdAt:nowISO()
+        };
+
+        state.payments.push(payment);
+
+        markCashLogProcessed(receipt.logId);
+        saveAll();
+
+        return {customer,policy,payment,customerCreated};
+    }
+
+    function cashReceiptModal(receipt,matches,onDone){
+        const modal=createModal('Incoming cash payment detected');
+
+        const existingCustomer=state.customers.find(c=>
+            receipt.senderId && String(c.tornId)===String(receipt.senderId)
+        );
+
+        modal.content.innerHTML+=`
+          ${receipt.wasPreviouslyProcessed ? `
+          <div class="hji-help" style="background:#403823;border-color:#806f3d">
+            <strong>Previously processed cash log</strong>
+            <p>Recovery mode is showing this transfer again for review. Nothing is created unless you confirm it.</p>
+          </div>` : ''}
+
+          <div class="hji-help">
+            <strong>Possible cash insurance payment</strong>
+            <p>This incoming cash transfer matches ${matches.length} active insurance tier${matches.length===1?'':'s'} by price.</p>
+          </div>
+
+          <div class="hji-card">
+            <p><b>From:</b> ${esc(receipt.senderName||'Unknown')} ${receipt.senderId?`[${esc(receipt.senderId)}]`:''}</p>
+            <p><b>Amount:</b> $${money(receipt.amount)}</p>
+            <p><b>Message:</b> ${esc(receipt.transferMessage||'—')}</p>
+            <p><b>Customer:</b> ${existingCustomer?'Already exists':'New customer'}</p>
+          </div>
+
+          <div class="hji-form">
+            <label class="wide">Insurance tier
+              <select id="cash-receipt-tier">
+                ${matches.map(t=>
+                    `<option value="${t.id}">${esc(t.name)} · ${esc(t.type==='monthly'?'Monthly':'Single jump')} · $${money(t.cashPrice)}</option>`
+                ).join('')}
+              </select>
+            </label>
+          </div>`;
+
+        modal.actions.innerHTML=`
+          <button class="hji-btn" id="cash-receipt-later">Later</button>
+          <button class="hji-btn danger" id="cash-receipt-ignore">Ignore</button>
+          <button class="hji-btn good" id="cash-receipt-create">${existingCustomer?'Create policy':'Add customer + policy'}</button>`;
+
+        modal.el.querySelector('#cash-receipt-later').onclick=()=>{
+            saveProcessedCashScanRecord(receipt,'later');
+            modal.close();
+            onDone?.();
+        };
+
+        modal.el.querySelector('#cash-receipt-ignore').onclick=()=>{
+            markCashLogProcessed(receipt.logId);
+            saveProcessedCashScanRecord(receipt,'ignored');
+            modal.close();
+            onDone?.();
+        };
+
+        modal.el.querySelector('#cash-receipt-create').onclick=()=>{
+            const createBtn=modal.el.querySelector('#cash-receipt-create');
+            const tier=getTier(modal.el.querySelector('#cash-receipt-tier').value);
+
+            if(!tier){
+                alert('Choose a matching insurance tier first.');
+                return;
+            }
+
+            createBtn.disabled=true;
+            createBtn.textContent='Creating…';
+
+            try{
+                const created=createPolicyFromCashReceipt(receipt,tier);
+
+                saveProcessedCashScanRecord(receipt,'created',{
+                    tierId:tier.id,
+                    tierName:tier.name,
+                    customerId:created.customer.id,
+                    policyId:created.policy.id,
+                    paymentId:created.payment.id,
+                    reopened:Boolean(processedCashScanRecord(receipt.logId))
+                });
+
+                modal.close();
+
+                alert(
+                    `${created.customerCreated?'Customer added and policy created.':'Policy created.'}\n\n`+
+                    `${created.customer.name} [${created.customer.tornId||'ID unavailable'}]\n`+
+                    `${tier.name}\n`+
+                    `$${money(created.payment.amount)}\n\n`+
+                    `The cash payment is recorded and linked to the new policy.`
+                );
+
+                renderDashboard(overlay.querySelector('.hji-body'));
+                onDone?.();
+
+            }catch(e){
+                console.error('[HJI Manager] Could not create policy from cash receipt:',e);
+                createBtn.disabled=false;
+                createBtn.textContent=existingCustomer?'Create policy':'Add customer + policy';
+                alert(
+                    `Could not create the customer/policy.\n\n${e.message}\n\n`+
+                    `The cash log has not been marked processed, so you can try again.`
+                );
+            }
+        };
+    }
+
+    async function scanCashPayments(forceLookbackDays=0,includeProcessed=false){
+        const key=String(state.settings.apiKey||'').trim();
+        if(!key) return alert('Add the Manager API key in Settings first.');
+
+        if(!activeTierCashPrices().length){
+            return alert(
+                'No active tier cash prices are configured.\n\n'+
+                'Set a cash price on at least one active tier before scanning.'
+            );
+        }
+
+        const btn=!forceLookbackDays ? overlay?.querySelector('#hji-scan-cash') : null;
+        if(btn){
+            btn.disabled=true;
+            btn.textContent='Scanning cash receipts…';
+        }
+
+        const windowInfo=cashScanWindow(forceLookbackDays);
+
+        try{
+            const logs=await fetchMoneyReceiveLogs(windowInfo.from,windowInfo.to);
+
+            const processed=new Set(
+                (state.settings.processedCashLogIds||[]).map(String)
+            );
+
+            const candidates=logs
+                .filter(log=>includeProcessed || !processed.has(String(log?.id??'')))
+                .map(parseMoneyReceiveLog)
+                .filter(Boolean)
+                .filter(cashReceiptMatchesConfiguredAmount)
+                .map(receipt=>({
+                    ...receipt,
+                    wasPreviouslyProcessed:processed.has(String(receipt.logId||'')),
+                    previousAudit:processedCashScanRecord(receipt.logId)
+                }))
+                .sort((a,b)=>b.timestamp-a.timestamp);
+
+            state.settings.lastCashLogScan=new Date(windowInfo.to*1000).toISOString();
+            state.settings.cashScannerSchemaVersion=CASH_SCANNER_SCHEMA_VERSION;
+            saveAll();
+
+            if(!candidates.length){
+                alert(
+                    `Cash receipt scan complete.\n\n`+
+                    `${logs.length} Money receive log${logs.length===1?'':'s'} checked\n`+
+                    `0 matching tier-payment candidates found\n\n`+
+                    `Window: ${formatScanWindow(windowInfo.from,windowInfo.to)}\n`+
+                    `Mode: ${windowInfo.reason}\n`+
+                    `Processed logs included: ${includeProcessed?'Yes':'No'}`
+                );
+                renderDashboard(overlay.querySelector('.hji-body'));
+                return;
+            }
+
+            const queue=[...candidates];
+
+            const showNext=async()=>{
+                const receipt=queue.shift();
+                if(!receipt){
+                    renderDashboard(overlay.querySelector('.hji-body'));
+                    return;
+                }
+
+                await resolveReceiptSender(receipt);
+                const matches=cashTiersForReceipt(receipt);
+
+                if(!matches.length){
+                    showNext();
+                    return;
+                }
+
+                cashReceiptModal(receipt,matches,showNext);
+            };
+
+            showNext();
+
+        }catch(e){
+            alert(
+                `Could not scan cash-payment logs.\n\n${e.message}\n\n`+
+                `HJI checks Torn's Money receive logs in the money-transfer category. `+
+                `The saved cash checkpoint is not advanced when a scan fails.`
+            );
+        }finally{
+            if(btn){
+                btn.disabled=false;
+                btn.textContent='↻ Scan cash payments';
+            }
+        }
+    }
+
+    function processedCashScanLogModal(){
+        const modal=createModal('Processed Cash Scan Log');
+
+        const records=[...(state.settings.processedCashScans||[])]
+            .sort((a,b)=>(b.timestamp||0)-(a.timestamp||0));
+
+        modal.content.innerHTML+=`
+          <div class="hji-help">
+            <strong>Cash scan history</strong>
+            <p>Previously reviewed incoming cash transfers are listed here. Use <b>Reopen</b> if you ignored a genuine insurance payment by mistake.</p>
+          </div>
+
+          <div class="hji-scanlog-wrap">
+            <table class="hji-scanlog-table">
+              <colgroup>
+                <col style="width:20%">
+                <col style="width:24%">
+                <col style="width:18%">
+                <col style="width:18%">
+                <col style="width:12%">
+                <col style="width:8%">
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Sender</th>
+                  <th>Amount</th>
+                  <th>Message</th>
+                  <th>Action</th>
+                  <th>Manage</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${records.map((r,i)=>`
+                  <tr>
+                    <td>${r.timestamp?new Date(r.timestamp*1000).toLocaleString('en-GB'):'—'}</td>
+                    <td class="hji-scanlog-sender">
+                      <strong>${esc(r.senderName||'Unknown')}</strong>
+                      ${r.senderId?`<div class="hji-muted">[${esc(r.senderId)}]</div>`:''}
+                    </td>
+                    <td><strong>$${money(r.amount||0)}</strong></td>
+                    <td class="hji-scanlog-note">${esc(r.transferMessage||'—')}</td>
+                    <td>${esc(({
+                        created:'Created policy',
+                        ignored:'Ignored',
+                        later:'Later'
+                    })[r.action]||r.action||'')}</td>
+                    <td>
+                      ${r.action==='created'
+                        ? '<span class="hji-muted">Done</span>'
+                        : `<button class="hji-btn" data-reopen-cash="${i}">Reopen</button>`}
+                    </td>
+                  </tr>`).join('') || '<tr><td colspan="6">No processed cash scans recorded yet.</td></tr>'}
+              </tbody>
+            </table>
+          </div>`;
+
+        modal.actions.innerHTML='<button class="hji-btn" data-close>Close</button>';
+        modal.el.querySelector('[data-close]').onclick=modal.close;
+
+        modal.el.querySelectorAll('[data-reopen-cash]').forEach(btn=>{
+            btn.onclick=async()=>{
+                const record=records[Number(btn.dataset.reopenCash)];
+                if(!record) return;
+
+                const receipt=cashReceiptFromProcessedRecord(record);
+                unprocessCashLog(receipt.logId);
+                await resolveReceiptSender(receipt);
+
+                const matches=cashTiersForReceipt(receipt);
+                modal.close();
+
+                if(!matches.length){
+                    alert(
+                        `No active tier currently matches $${money(receipt.amount)}.\n\n`+
+                        `Edit a tier cash price first, then reopen this receipt again.`
+                    );
+                    return;
+                }
+
+                cashReceiptModal(receipt,matches,()=>{
                     renderDashboard(overlay.querySelector('.hji-body'));
                 });
             };
@@ -2100,6 +2846,10 @@
             ? new Date(state.settings.lastItemLogScan).toLocaleString('en-GB')
             : 'Never';
 
+        const lastCashScan = state.settings.lastCashLogScan
+            ? new Date(state.settings.lastCashLogScan).toLocaleString('en-GB')
+            : 'Never';
+
         body.innerHTML=`
           <div class="hji-toolbar">
             <button class="hji-btn good" id="hji-scan-items">↻ Scan item payments</button>
@@ -2114,7 +2864,23 @@
             <p><b>Rescan last 3 days</b> is a recovery tool. It deliberately includes previously processed log IDs so older scanner mistakes can be reviewed again. Nothing is created unless you confirm the receipt.</p>
             <p><b>Watching for:</b> ${itemScanFilterSummaryHtml()}</p>
             <p class="hji-muted">Only incoming items configured on active tiers are considered possible insurance payments. HJI matches Tier Item IDs first, so unrelated incoming items are ignored without extra item lookups.</p>
+            <p class="hji-muted"><b>Cash payments are separate:</b> use the Cash payment scanner below. Item and cash receipts keep independent checkpoints and audit logs.</p>
             <p><b>Last successful item scan:</b> ${esc(lastItemScan)}</p>
+          </div>
+
+          <div class="hji-toolbar">
+            <button class="hji-btn good" id="hji-scan-cash">↻ Scan cash payments</button>
+            <button class="hji-btn" id="hji-rescan-cash-3d">↺ Cash recovery 3 days</button>
+            <button class="hji-btn" id="hji-cash-scan-log">Processed cash log (${(state.settings.processedCashScans||[]).length})</button>
+          </div>
+
+          <div class="hji-help">
+            <strong>Incoming cash-payment scan</strong>
+            <p>Checks Torn <b>Money receive</b> logs and compares the received amount against active tier cash prices. Nothing is created until you confirm the match.</p>
+            <p>First scan looks back <b>3 days</b>. Later scans use the last successful cash scan with a 5-minute overlap.</p>
+            <p><b>Watching for:</b> ${cashScanFilterSummaryHtml()}</p>
+            <p class="hji-muted">Other incoming cash amounts are ignored. If two tiers use the same price, HJI lets you choose which tier the payment belongs to.</p>
+            <p><b>Last successful cash scan:</b> ${esc(lastCashScan)}</p>
           </div>
 
           <div class="hji-grid">
@@ -2189,6 +2955,34 @@
           </div>`;
 
         body.querySelector('#hji-scan-items').onclick=()=>scanItemPayments();
+
+        body.querySelector('#hji-scan-cash').onclick=()=>scanCashPayments();
+
+        body.querySelector('#hji-rescan-cash-3d').onclick=async()=>{
+            if(!confirm(
+                'Recovery rescan: check the last 3 days of Torn Money receive logs?\n\n'+
+                'Previously processed cash transfers WILL be included for review.\n'+
+                'Nothing is created automatically.'
+            )) return;
+
+            const recoveryBtn=body.querySelector('#hji-rescan-cash-3d');
+            if(recoveryBtn){
+                recoveryBtn.disabled=true;
+                recoveryBtn.textContent='Cash recovery scanning…';
+            }
+
+            try{
+                await scanCashPayments(3,true);
+            }finally{
+                const b=overlay?.querySelector('#hji-rescan-cash-3d');
+                if(b){
+                    b.disabled=false;
+                    b.textContent='↺ Cash recovery 3 days';
+                }
+            }
+        };
+
+        body.querySelector('#hji-cash-scan-log').onclick=processedCashScanLogModal;
         body.querySelector('#hji-rescan-items-3d').onclick=async()=>{
             if(!confirm(
                 'Recovery rescan: check the last 3 days of Torn Item receive logs?\n\n' +
@@ -3453,7 +4247,7 @@
 
         <div class="hji-card">
           <strong>Torn API <span class="hji-info-tip" data-hji-info-title="Information" data-hji-info="Used for reading claim mail and identifying the API-key owner.">i</span></strong>
-          <p class="hji-muted">The custom key requests <b>messages</b>, <b>newmessages</b>, <b>basic</b>, and <b>log</b>. Log access is used only when you press <b>Scan item payments</b>. HJI filters specifically for Torn's Item receive log (4103). The item scanner uses Torn API v2's user log selection filtered to Item receive (4103).</p>
+          <p class="hji-muted">The custom key requests <b>messages</b>, <b>newmessages</b>, <b>basic</b>, and <b>log</b>. Log access is used only when you press <b>Scan item payments</b>. HJI filters specifically for Torn's Item receive log (4103). The item scanner uses Torn API v2's user log selection filtered to Item receive (4103). The cash scanner uses the money-transfer log category and keeps only Money receive entries.</p>
           <div class="hji-help">
             <strong>Log-access note</strong>
             <p>Torn requires a full-access API key for <code>user/log</code>. HJI does not continuously scan logs; it only requests them when you press the scan button, and matching/processed data stays in this Manager's local storage.</p>
