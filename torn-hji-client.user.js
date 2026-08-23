@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Client
 // @namespace    torn-hji
-// @version      0.4.1
+// @version      0.4.2
 // @description  Insured-user client for importing Happy Jump policies and preparing structured Torn Mail claims.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -18,7 +18,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.4.1';
+    const VERSION = '0.4.2';
     const PREFIX='torn_hji_client_v2_';
     const LEGACY_PREFIX='torn_hji_client_v1_';
     const CLAIM_PREFIX='[HJI CLAIM]';
@@ -598,48 +598,102 @@
     }
 
     function detectCurrentTornUser(){
-        // First locate a plausible own-profile link / ID.
-        const profileLinks=[...document.querySelectorAll('a[href*="profiles.php?XID="]')];
+        // Never scan arbitrary Torn profile links here: normal Torn pages can contain
+        // links to many unrelated players, which previously caused false detection.
 
-        for(const a of profileLinks){
-            const href=String(a.getAttribute('href')||'');
-            const m=href.match(/XID=(\d+)/i);
-            if(!m) continue;
+        // Only trust explicit page-level identity attributes when they are attached
+        // to the document/root/header rather than arbitrary user cards.
+        const trustedNodes=[
+            document.documentElement,
+            document.body,
+            document.querySelector('header'),
+            document.querySelector('#header-root'),
+            document.querySelector('[data-current-user-id]'),
+            document.querySelector('[data-own-user-id]')
+        ].filter(Boolean);
 
-            const id=m[1];
-            const name=findUsernameForTornId(id);
-
-            // We can safely return the ID even if name was not found; importantly,
-            // never use generic UI labels such as "View Profile" as the username.
-            if(name) return {id,name,source:'Torn page'};
-        }
-
-        // Torn/PDA may expose the logged-in account through data attributes instead.
-        for(const n of document.querySelectorAll('[data-user-id],[data-player-id],[data-userid]')){
-            const id=n.getAttribute('data-user-id') ||
-                     n.getAttribute('data-player-id') ||
-                     n.getAttribute('data-userid');
-
-            if(!id || !/^\d+$/.test(id)) continue;
-
-            const direct=
-                n.getAttribute('data-user-name') ||
-                n.getAttribute('data-name') ||
+        for(const n of trustedNodes){
+            const id=
+                n.getAttribute?.('data-current-user-id') ||
+                n.getAttribute?.('data-own-user-id') ||
                 '';
 
-            const name=cleanDetectedUsername(direct,id) || findUsernameForTornId(id);
+            if(!/^\d+$/.test(String(id))) continue;
 
-            if(name) return {id,name,source:'Torn page data'};
+            const name=cleanDetectedUsername(
+                n.getAttribute?.('data-current-user-name') ||
+                n.getAttribute?.('data-own-user-name') ||
+                '',
+                id
+            );
+
+            if(name) return {id:String(id),name,source:'trusted Torn page data'};
         }
 
         return null;
     }
 
+    function extractOwnBasicIdentity(data){
+        if(!data || typeof data!=='object') return null;
+
+        const candidates=[
+            data,
+            data.basic,
+            data.user,
+            data.profile
+        ].filter(v=>v && typeof v==='object');
+
+        for(const obj of candidates){
+            const id=
+                obj.id ??
+                obj.player_id ??
+                obj.user_id ??
+                obj.playerId;
+
+            const name=
+                obj.name ??
+                obj.player_name ??
+                obj.username;
+
+            if(id!=null && /^\d+$/.test(String(id))){
+                const clean=cleanDetectedUsername(name,String(id));
+                if(clean){
+                    return {
+                        id:String(id),
+                        name:clean,
+                        source:'Torn API key owner'
+                    };
+                }
+            }
+        }
+
+        return null;
+    }
+
+    async function detectCurrentTornUserViaApi(apiKey){
+        const key=String(apiKey||'').trim();
+        if(!key) return null;
+
+        const data=await requestClientApi(`${API_BASE}/user/basic`,key);
+
+        if(data?.error){
+            throw new Error(
+                data.error.error ||
+                data.error.message ||
+                JSON.stringify(data.error)
+            );
+        }
+
+        return extractOwnBasicIdentity(data);
+    }
+
     function autoFillCurrentUser(){
-        const found = detectCurrentTornUser();
-        if (!found) return null;
-        if (!state.claimantId) state.claimantId = String(found.id);
-        if (!state.claimantName && found.name) state.claimantName = String(found.name);
+        const found=detectCurrentTornUser();
+        if(!found) return null;
+
+        if(!state.claimantId) state.claimantId=String(found.id);
+        if(!state.claimantName && found.name) state.claimantName=String(found.name);
+
         save();
         return found;
     }
@@ -722,20 +776,37 @@
     }
 
     function settingsViewHtml(){
-        const detected=detectCurrentTornUser();
+        const trusted=detectCurrentTornUser();
+
         return `<div class="hc-card"><h3>Client settings</h3>
-          <div class="hc-help"><p>The Client does <b>not</b> need an API key to import policies or submit claims.</p><p>An API key is optional and is used only for claim-status syncing.</p></div>
+          <div class="hc-help">
+            <p>The Client does <b>not</b> need an API key to import policies or submit claims.</p>
+            <p>The optional key is used for <b>claim/policy mail sync</b> and for safely detecting the account that owns that key.</p>
+            <p>HJI no longer guesses your identity from ordinary profile links on Torn pages.</p>
+          </div>
+
           <div class="hc-form">
             <label>Your Torn name<input id="cs-cname" value="${esc(state.claimantName||'')}"></label>
             <label>Your Torn ID<input id="cs-cid" inputmode="numeric" value="${esc(state.claimantId||'')}"></label>
-            <label class="wide">Optional claim/policy sync API key<div style="display:flex;gap:7px"><input id="cs-status-key" type="password" value="${esc(state.settings.statusApiKey||'')}" placeholder="Optional"><button class="hc-btn" type="button" id="cs-show-key">Show</button></div></label>
+
+            <label class="wide">Optional claim/policy sync API key
+              <div style="display:flex;gap:7px">
+                <input id="cs-status-key" type="password" value="${esc(state.settings.statusApiKey||'')}" placeholder="Optional">
+                <button class="hc-btn" type="button" id="cs-show-key">Show</button>
+              </div>
+            </label>
           </div>
+
           <div class="hc-actions">
             <button class="hc-btn" id="cs-detect">Detect My Torn Account</button>
             <button class="hc-btn" id="cs-key-builder">Generate sync key</button>
             <button class="hc-btn good" id="cs-save">Save settings</button>
           </div>
-          <div class="hc-muted" style="margin-top:8px">${detected?`Detected from ${esc(detected.source)}: ${esc(detected.name||'Unknown')} [${esc(detected.id)}]`:'No account details were detected from the current Torn page yet.'}</div>
+
+          <div class="hc-muted" style="margin-top:8px">
+            Saved account: ${esc(state.claimantName||'Not set')} ${state.claimantId?`[${esc(state.claimantId)}]`:''}
+            ${trusted?`<br>Trusted page identity: ${esc(trusted.name)} [${esc(trusted.id)}]`:''}
+          </div>
         </div>`;
     }
 
@@ -761,22 +832,64 @@
         }else if(currentClientView==='settings'){
             body.innerHTML=settingsViewHtml();
             const keyInput=body.querySelector('#cs-status-key');
-            const keyUrl='https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Happy%20Jump%20Insurance%20Client%20Sync&user=messages';
+            const keyUrl='https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Happy%20Jump%20Insurance%20Client%20Sync&user=messages,basic';
 
             body.querySelector('#cs-show-key').onclick=()=>{
                 const showing=keyInput.type==='text';
                 keyInput.type=showing?'password':'text';
                 body.querySelector('#cs-show-key').textContent=showing?'Show':'Hide';
             };
-            body.querySelector('#cs-detect').onclick=()=>{
-                const found=detectCurrentTornUser();
-                if(!found)return alert('Could not detect your Torn account from the current page. You can still enter the fields manually.');
-                body.querySelector('#cs-cid').value=found.id;
-                if(found.name)body.querySelector('#cs-cname').value=found.name;
-                state.claimantId=found.id;
-                if(found.name)state.claimantName=found.name;
-                save();
-                alert(`Detected ${found.name||'Torn user'} [${found.id}]`);
+            body.querySelector('#cs-detect').onclick=async()=>{
+                const btn=body.querySelector('#cs-detect');
+                const key=String(keyInput.value||'').trim();
+
+                btn.disabled=true;
+                btn.textContent='Detecting…';
+
+                try{
+                    let found=null;
+
+                    if(key){
+                        found=await detectCurrentTornUserViaApi(key);
+                    }
+
+                    if(!found){
+                        found=detectCurrentTornUser();
+                    }
+
+                    if(!found){
+                        alert(
+                            'HJI could not safely identify your Torn account.\n\n' +
+                            'Your saved Name and ID have NOT been changed.\n\n' +
+                            'If you want automatic detection, generate a new Client sync key with the Basic permission, or enter the fields manually.'
+                        );
+                        return;
+                    }
+
+                    body.querySelector('#cs-cid').value=found.id;
+                    body.querySelector('#cs-cname').value=found.name;
+
+                    state.claimantId=String(found.id);
+                    state.claimantName=String(found.name);
+                    state.settings.statusApiKey=keyInput.value.trim();
+                    save();
+
+                    alert(`Detected ${found.name} [${found.id}]\n\nSource: ${found.source}`);
+                    open('settings');
+
+                }catch(e){
+                    alert(
+                        `Could not safely detect your Torn account.\n\n${e.message}\n\n` +
+                        'Your saved Name and ID have NOT been changed. ' +
+                        'Older Client sync keys may need to be regenerated with Basic permission.'
+                    );
+                }finally{
+                    const b=overlay?.querySelector('#cs-detect');
+                    if(b){
+                        b.disabled=false;
+                        b.textContent='Detect My Torn Account';
+                    }
+                }
             };
             body.querySelector('#cs-key-builder').onclick=()=>{
                 const a=document.createElement('a');a.href=keyUrl;a.target='_blank';a.rel='noopener noreferrer';document.body.appendChild(a);a.click();a.remove();
