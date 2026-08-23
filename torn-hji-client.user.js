@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Client
 // @namespace    torn-hji
-// @version      0.4.2
+// @version      0.4.3
 // @description  Insured-user client for importing Happy Jump policies and preparing structured Torn Mail claims.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -18,7 +18,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.4.2';
+    const VERSION = '0.4.3';
     const PREFIX='torn_hji_client_v2_';
     const LEGACY_PREFIX='torn_hji_client_v1_';
     const CLAIM_PREFIX='[HJI CLAIM]';
@@ -424,7 +424,7 @@
 
     async function syncClaimStatuses(){
         const key=String(state.settings.statusApiKey||'').trim();
-        if(!key) return alert('Add the optional Claim/Policy Sync API key in Client Settings first.');
+        if(!key) return alert('Add the Client API key in Settings first. It is required for claim/policy syncing, but not for importing policies or submitting claims.');
 
         try{
             const data=await requestClientApi(`${API_BASE}/user/messages?limit=100&sort=DESC`,key);
@@ -724,6 +724,7 @@
           <div class="hc-help">
             <strong>My claims</strong>
             <p>Claims start as <b>Prepared</b>. Provider status mails can update them here after sync.</p>
+            <p><b>Sync requires the Client API key configured in Settings.</b></p>
             <p>After a status has synced successfully, the Torn Mail can be deleted — the status is stored locally in this Client.</p>
             <p><b>Last status sync:</b> ${esc(lastSync)}</p>
           </div>
@@ -760,7 +761,7 @@
         return `
           <div class="hc-help">
             <strong>Policy status</strong>
-            <p>Your insurer gives you an HJI setup code. Import it here, then use <b>Sync policies</b> to receive policy status changes sent by the provider.</p>
+            <p>Your insurer gives you an HJI setup code. Import it here. <b>Sync policies requires the Client API key in Settings</b> to receive policy status changes sent by the provider.</p>
             <p><span class="hc-status-active">Green = active</span> · <span class="hc-status-due">Amber = due soon</span> · <span class="hc-status-expired">Red = expired</span> · Grey = cancelled / used / paid out.</p>
             <p><b>Your Torn account:</b> ${esc(state.claimantName||'Unknown')} ${state.claimantId?`[${esc(state.claimantId)}]`:''}</p>
           </div>
@@ -780,8 +781,9 @@
 
         return `<div class="hc-card"><h3>Client settings</h3>
           <div class="hc-help">
-            <p>The Client does <b>not</b> need an API key to import policies or submit claims.</p>
-            <p>The optional key is used for <b>claim/policy mail sync</b> and for safely detecting the account that owns that key.</p>
+            <strong>API key requirements</strong>
+            <p><b>No API key required:</b> import policies, view cover, and prepare/send claims.</p>
+            <p><b>API key required:</b> Detect My Torn Account and Sync claim/policy statuses.</p>
             <p>HJI no longer guesses your identity from ordinary profile links on Torn pages.</p>
           </div>
 
@@ -789,7 +791,7 @@
             <label>Your Torn name<input id="cs-cname" value="${esc(state.claimantName||'')}"></label>
             <label>Your Torn ID<input id="cs-cid" inputmode="numeric" value="${esc(state.claimantId||'')}"></label>
 
-            <label class="wide">Optional claim/policy sync API key
+            <label class="wide">API key (required for sync + auto-detect)
               <div style="display:flex;gap:7px">
                 <input id="cs-status-key" type="password" value="${esc(state.settings.statusApiKey||'')}" placeholder="Optional">
                 <button class="hc-btn" type="button" id="cs-show-key">Show</button>
@@ -799,12 +801,13 @@
 
           <div class="hc-actions">
             <button class="hc-btn" id="cs-detect">Detect My Torn Account</button>
-            <button class="hc-btn" id="cs-key-builder">Generate sync key</button>
+            <button class="hc-btn" id="cs-key-builder">Generate sync/detect key</button>
             <button class="hc-btn good" id="cs-save">Save settings</button>
           </div>
 
           <div class="hc-muted" style="margin-top:8px">
-            Saved account: ${esc(state.claimantName||'Not set')} ${state.claimantId?`[${esc(state.claimantId)}]`:''}
+            <b>API key status:</b> ${state.settings.statusApiKey ? 'Configured — sync and auto-detect available.' : 'Not configured — basic Client features still work, but sync and auto-detect are unavailable.'}
+            <br>Saved account: ${esc(state.claimantName||'Not set')} ${state.claimantId?`[${esc(state.claimantId)}]`:''}
             ${trusted?`<br>Trusted page identity: ${esc(trusted.name)} [${esc(trusted.id)}]`:''}
           </div>
         </div>`;
