@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.30
+// @version      0.4.31
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.30';
+    const VERSION = '0.4.31';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -37,27 +37,6 @@
     const CASH_SCANNER_SCHEMA_VERSION = 1;
 
 
-
-    function decodeStoredValue(value, fallback) {
-        if (value === undefined || value === null || value === '') return fallback;
-
-        // Torn PDA/userscript engines may return JSON values as strings rather than
-        // preserving the original array/object type. Decode up to two layers.
-        let out = value;
-        for (let i = 0; i < 2 && typeof out === 'string'; i++) {
-            const s = out.trim();
-            if (!s || (!s.startsWith('{') && !s.startsWith('[') && !s.startsWith('"'))) break;
-            try { out = JSON.parse(s); } catch { break; }
-        }
-
-        // Some wrappers expose the actual stored value inside a `value` property.
-        if (out && typeof out === 'object' && !Array.isArray(out) &&
-            Object.keys(out).length === 1 && Object.prototype.hasOwnProperty.call(out, 'value')) {
-            return decodeStoredValue(out.value, fallback);
-        }
-
-        return out;
-    }
 
     function decodeStoredValue(value, fallback) {
         if (value === undefined || value === null || value === '') return fallback;
@@ -428,26 +407,6 @@
         }
     ];
 
-    function normalizeCollection(value, name) {
-        const decoded = decodeStoredValue(value, []);
-
-        if (Array.isArray(decoded)) return decoded;
-
-        // Recover an object containing numeric/indexed records rather than crashing.
-        if (decoded && typeof decoded === 'object') {
-            const values = Object.values(decoded);
-            if (values.length && values.every(v => v && typeof v === 'object')) {
-                console.warn(`[HJI Manager] Recovered ${name} from object storage format.`);
-                return values;
-            }
-        }
-
-        if (decoded !== undefined && decoded !== null && decoded !== '') {
-            console.warn(`[HJI Manager] Invalid ${name} storage value ignored:`, decoded);
-        }
-        return [];
-    }
-
     function normalizeSettings(value) {
         const defaults = {
             providerId: '',
@@ -510,21 +469,6 @@
             console.warn(`[HJI Manager] Invalid ${name} value was reset safely.`, decoded);
         }
         return [];
-    }
-
-    function normalizeSettings(value) {
-        const defaults = {
-            providerId: '',
-            providerName: '',
-            apiKey: '',
-            dueSoonDays: 3,
-            claimPollMinutes: 10,
-            lastMailScan: null
-        };
-        const decoded = decodeStoredValue(value, {});
-        return decoded && typeof decoded === 'object' && !Array.isArray(decoded)
-            ? { ...defaults, ...decoded }
-            : defaults;
     }
 
     let state = {
@@ -1221,12 +1165,6 @@
         return activeTierPaymentItems().some(item =>
             String(item.itemId||'').trim() &&
             String(item.itemId).trim()===receiptId
-        );
-    }
-
-    function hasConfiguredTierItemIds() {
-        return activeTierPaymentItems().some(item =>
-            String(item.itemId||'').trim()
         );
     }
 
@@ -3952,10 +3890,6 @@
         }
     }
 
-
-    function safeClone(obj) {
-        return JSON.parse(JSON.stringify(obj));
-    }
 
     function buildBackupPayload() {
         const data = {
