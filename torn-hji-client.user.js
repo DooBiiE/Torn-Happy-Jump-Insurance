@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Client
 // @namespace    torn-hji
-// @version      0.4.3
+// @version      0.4.4
 // @description  Insured-user client for importing Happy Jump policies and preparing structured Torn Mail claims.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -18,7 +18,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.4.3';
+    const VERSION = '0.4.4';
     const PREFIX='torn_hji_client_v2_';
     const LEGACY_PREFIX='torn_hji_client_v1_';
     const CLAIM_PREFIX='[HJI CLAIM]';
@@ -784,7 +784,6 @@
             <strong>API key requirements</strong>
             <p><b>No API key required:</b> import policies, view cover, and prepare/send claims.</p>
             <p><b>API key required:</b> Detect My Torn Account and Sync claim/policy statuses.</p>
-            <p>HJI no longer guesses your identity from ordinary profile links on Torn pages.</p>
           </div>
 
           <div class="hc-form">
