@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.24
+// @version      0.4.25
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,18 +19,17 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.24';
+    const VERSION = '0.4.25';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
     const POLICY_PREFIX = '[HJI POLICY]';
     const API_BASE = 'https://api.torn.com/v2';
-    const TORN_LOG_API_BASE = 'https://api.torn.com/user/';
     const ITEM_RECEIVE_LOG_ID = 4103;
     const ITEM_SCAN_FIRST_LOOKBACK_SECONDS = 3 * 24 * 60 * 60;
     const ITEM_SCAN_OVERLAP_SECONDS = 5 * 60;
     const ITEM_SCAN_PAGE_LIMIT = 100;
-    const ITEM_SCANNER_SCHEMA_VERSION = 5;
+    const ITEM_SCANNER_SCHEMA_VERSION = 6;
 
 
     function decodeStoredValue(value, fallback) {
@@ -1688,45 +1687,6 @@
         };
     }
 
-    function requestLegacyTornLog(url, apiKey) {
-        return new Promise((resolve, reject) => {
-            const joiner = url.includes('?') ? '&' : '?';
-            const authedUrl = `${url}${joiner}key=${encodeURIComponent(apiKey)}`;
-
-            if (typeof GM_xmlhttpRequest === 'function') {
-                try {
-                    GM_xmlhttpRequest({
-                        method:'GET',
-                        url:authedUrl,
-                        headers:{'Accept':'application/json'},
-                        onload:r=>{
-                            try {
-                                const parsed=JSON.parse(r.responseText);
-                                resolve(parsed);
-                            } catch(e) {
-                                reject(new Error(`Could not parse Torn log response (${r.status}).`));
-                            }
-                        },
-                        onerror:()=>reject(new Error('Torn legacy log request failed'))
-                    });
-                    return;
-                } catch {}
-            }
-
-            fetch(authedUrl, {
-                headers:{'Accept':'application/json'}
-            })
-            .then(async r=>{
-                const raw=await r.text();
-                try {
-                    return JSON.parse(raw);
-                } catch {
-                    throw new Error(`Could not parse Torn log response (${r.status}).`);
-                }
-            })
-            .then(resolve,reject);
-        });
-    }
 
     async function fetchItemReceiveLogs(fromUnix, toUnix) {
         const all = [];
@@ -1737,17 +1697,19 @@
         while (cursorTo >= fromUnix && page < 50) {
             page++;
 
-            // Torn's user log selection currently uses the legacy-compatible
-            // endpoint/response. Filtering by log=4103 here is reliable, while
-            // /v2/user/log has changed behaviour during the API v2 migration.
+            // Torn API v2 supports log filtering through the generic user selection:
+            // /v2/user?selections=log&log=4103&from=...&to=...
+            // This avoids both the legacy backend errors and the inconsistent
+            // /v2/user/log behaviour seen during API-v2 changes.
             const url =
-                `${TORN_LOG_API_BASE}` +
+                `${API_BASE}/user` +
                 `?selections=log` +
                 `&log=${ITEM_RECEIVE_LOG_ID}` +
                 `&from=${encodeURIComponent(fromUnix)}` +
-                `&to=${encodeURIComponent(cursorTo)}`;
+                `&to=${encodeURIComponent(cursorTo)}` +
+                `&limit=${ITEM_SCAN_PAGE_LIMIT}`;
 
-            const data = await requestLegacyTornLog(url, state.settings.apiKey);
+            const data = await requestApi(url, state.settings.apiKey);
 
             if (data?.error) {
                 throw new Error(
@@ -1762,11 +1724,12 @@
                 : 0;
 
             console.info(
-                `[HJI Manager] Torn log page ${page}: ${rawLogCount} raw log entries returned`,
+                `[HJI Manager] Torn v2 user-log page ${page}: ${rawLogCount} raw 4103 entries returned`,
                 data
             );
 
             const batch = getLogArray(data)
+                .filter(log => !log?.log || Number(log.log) === ITEM_RECEIVE_LOG_ID)
                 .sort((a,b)=>Number(b.timestamp||0)-Number(a.timestamp||0));
 
             if (!batch.length) break;
@@ -1774,18 +1737,20 @@
             for (const log of batch) {
                 const id = String(log?.id ?? '');
                 const key = id || `${log?.timestamp || ''}:${JSON.stringify(log?.data || {})}`;
+
                 if (seen.has(key)) continue;
                 seen.add(key);
                 all.push(log);
             }
 
-            const oldest = Math.min(
-                ...batch
-                    .map(log => Number(log?.timestamp || 0))
-                    .filter(ts => Number.isFinite(ts) && ts > 0)
-            );
+            const timestamps = batch
+                .map(log => Number(log?.timestamp || 0))
+                .filter(ts => Number.isFinite(ts) && ts > 0);
 
-            if (!Number.isFinite(oldest)) break;
+            if (!timestamps.length) break;
+
+            const oldest = Math.min(...timestamps);
+
             if (oldest <= fromUnix) break;
             if (batch.length < ITEM_SCAN_PAGE_LIMIT) break;
 
@@ -1859,7 +1824,7 @@
                 alert(
                     `Item receipt scan complete.\n\n` +
                     `${logs.length} Item receive log${logs.length===1?'':'s'} checked\n` +
-                    `Log source: Torn user log selection (4103, legacy-auth request)\n` +
+                    `Log source: Torn API v2 user selection (log 4103)\n` +
                     `0 matching tier-payment candidates found\n\n` +
                     `Window: ${formatScanWindow(windowInfo.from, windowInfo.to)}
 ` +
@@ -1907,7 +1872,7 @@
         } catch(e) {
             alert(
                 `Could not scan item-payment logs.\n\n${e.message}\n\n` +
-                `HJI scans Torn's Item receive log (4103). ` +
+                `HJI scans Torn API v2 user logs filtered to Item receive (4103). ` +
                 `The saved last-scan checkpoint is not advanced when a scan fails.`
             );
         } finally {
@@ -3338,7 +3303,7 @@
 
         <div class="hji-card">
           <strong>Torn API <span class="hji-info" title="Used for reading claim mail and identifying the API-key owner.">i</span></strong>
-          <p class="hji-muted">The custom key requests <b>messages</b>, <b>newmessages</b>, <b>basic</b>, and <b>log</b>. Log access is used only when you press <b>Scan item payments</b>. HJI filters specifically for Torn's Item receive log (4103). Only this log request uses Torn's legacy-compatible key-query authentication; the rest of HJI continues using API v2.</p>
+          <p class="hji-muted">The custom key requests <b>messages</b>, <b>newmessages</b>, <b>basic</b>, and <b>log</b>. Log access is used only when you press <b>Scan item payments</b>. HJI filters specifically for Torn's Item receive log (4103). The item scanner uses Torn API v2's user log selection filtered to Item receive (4103).</p>
           <div class="hji-help">
             <strong>Log-access note</strong>
             <p>Torn requires a full-access API key for <code>user/log</code>. HJI does not continuously scan logs; it only requests them when you press the scan button, and matching/processed data stays in this Manager's local storage.</p>
