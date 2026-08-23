@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Manager
 // @namespace    torn-hji
-// @version      0.4.26
+// @version      0.4.27
 // @description  Provider-side Happy Jump insurance policy and claims manager for Torn.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -19,7 +19,7 @@
     'use strict';
 
     const APP = 'HJI Manager';
-    const VERSION = '0.4.26';
+    const VERSION = '0.4.27';
     const PREFIX = 'torn_hji_manager_v1_';
     const CLAIM_PREFIX = '[HJI CLAIM]';
     const STATUS_PREFIX = '[HJI STATUS]';
@@ -595,7 +595,9 @@
         .hji-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.hji-form label{display:flex;flex-direction:column;gap:5px;color:#ddd;font-weight:600}.hji-form .wide{grid-column:1/-1}
         .hji-form input,.hji-form select,.hji-form textarea,.hji-modal input,.hji-modal select,.hji-modal textarea{box-sizing:border-box;width:100%;background:var(--hji-input)!important;color:#f2f2f2!important;border:1px solid #5a5a5a;border-radius:4px;padding:8px;-webkit-text-fill-color:#f2f2f2!important;caret-color:#fff}.hji-form textarea{min-height:80px}.hji-form input::placeholder,.hji-form textarea::placeholder{color:#8e8e8e!important;-webkit-text-fill-color:#8e8e8e!important}.hji-form select option,.hji-modal select option{background:#222;color:#f2f2f2}
         .hji-modal-bg{position:absolute;inset:0;background:#000b;display:flex;align-items:center;justify-content:center;padding:12px;z-index:5}.hji-modal{width:min(620px,94%);max-height:88%;overflow:auto;background:#292929;color:var(--hji-text);border:1px solid #666;border-radius:6px;padding:14px}.hji-modal h3{margin-top:0;color:#fff}.hji-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}
-        .hji-muted{color:#aaa!important;font-size:12px}.hji-pill{display:inline-block;padding:3px 7px;border-radius:999px;background:#444;color:#ddd}.hji-help{background:#252d33;border:1px solid #465966;border-radius:5px;padding:10px;margin:8px 0 12px;color:#e1e1e1}.hji-help strong{color:#fff}.hji-help p{margin:5px 0}.hji-help details{margin-top:6px}.hji-help summary{cursor:pointer;font-weight:700;color:#dceaf3}.hji-info{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;background:#59636d;color:#fff;font-size:11px;font-weight:bold;cursor:help;margin-left:4px}
+        .hji-muted{color:#aaa!important;font-size:12px}.hji-pill{display:inline-block;padding:3px 7px;border-radius:999px;background:#444;color:#ddd}.hji-info-tip{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;border:1px solid #666;background:#3a3a3a;color:#fff;font-size:12px;font-weight:700;cursor:pointer;vertical-align:middle;margin-left:4px;user-select:none}
+        .hji-info-tip:active{background:#555}
+        .hji-help{background:#252d33;border:1px solid #465966;border-radius:5px;padding:10px;margin:8px 0 12px;color:#e1e1e1}.hji-help strong{color:#fff}.hji-help p{margin:5px 0}.hji-help details{margin-top:6px}.hji-help summary{cursor:pointer;font-weight:700;color:#dceaf3}.hji-info{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:50%;background:#59636d;color:#fff;font-size:11px;font-weight:bold;cursor:help;margin-left:4px}
         .hji-resize-grip{position:absolute;right:0;bottom:0;width:30px;height:30px;z-index:20;cursor:nwse-resize;touch-action:none}.hji-resize-grip:after{content:'↘';position:absolute;right:5px;bottom:3px;color:#bbb;font-size:18px}
         @media(max-width:700px){#hji-launcher{left:9px;bottom:10px;padding:8px 11px}#hji-app{width:92vw;height:76vh;max-height:84vh;min-height:300px}#hji-app.hji-compact{width:86vw;height:66vh}.hji-grid{grid-template-columns:repeat(2,1fr)}.hji-form{grid-template-columns:1fr}.hji-form .wide{grid-column:auto}.hji-table{font-size:12px}.hji-table th,.hji-table td{padding:6px}.hji-head h2{font-size:15px}}
         `;
@@ -1134,6 +1136,69 @@
         }
 
         return receipt;
+    }
+
+    function activeTierPaymentItems() {
+        const items = [];
+        const seen = new Set();
+
+        for (const tier of normalizeCollection(state.tiers, 'tiers')) {
+            if (!tier || tier.active === false || Number(tier.itemQty || 0) <= 0) continue;
+
+            const itemId = String(tier.itemId || '').trim();
+            const itemName = String(tier.itemName || '').trim();
+            if (!itemId && !itemName) continue;
+
+            const key = itemId
+                ? `id:${itemId}`
+                : `name:${normalizeItemName(itemName)}`;
+
+            if (seen.has(key)) continue;
+            seen.add(key);
+
+            items.push({
+                itemId,
+                itemName,
+                tierId:String(tier.id || ''),
+                tierName:String(tier.name || '')
+            });
+        }
+
+        return items;
+    }
+
+    function receiptMatchesConfiguredItem(receipt) {
+        const configured = activeTierPaymentItems();
+        if (!configured.length) return false;
+
+        const receiptId = String(receipt?.itemId || '').trim();
+        const receiptName = normalizeItemName(receipt?.itemName || '');
+
+        return configured.some(item => {
+            if (item.itemId && receiptId) {
+                return String(item.itemId) === receiptId;
+            }
+
+            return Boolean(
+                item.itemName &&
+                receiptName &&
+                normalizeItemName(item.itemName) === receiptName
+            );
+        });
+    }
+
+    function itemScanFilterSummaryHtml() {
+        const items = activeTierPaymentItems();
+
+        if (!items.length) {
+            return '<span class="hji-expired">No active tier payment items configured</span>';
+        }
+
+        return items.map(item => {
+            const label = item.itemName || `Item ID ${item.itemId}`;
+            const id = item.itemId ? ` [ID ${item.itemId}]` : '';
+            return `<span class="hji-pill">${esc(label)}${esc(id)}</span>`;
+        }).join(' ');
     }
 
     function tierMatchesReceipt(tier, receipt) {
@@ -3280,19 +3345,40 @@
         inp.click();
     }
 
+    function bindInfoTips(root) {
+        if (!root) return;
+
+        root.querySelectorAll('[data-hji-info]').forEach(el => {
+            el.onclick = (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+
+                const title = el.getAttribute('data-hji-info-title') || 'Information';
+                const message = el.getAttribute('data-hji-info') || '';
+
+                const modal = createModal(title);
+                modal.content.innerHTML += `<div class="hji-help"><p>${esc(message)}</p></div>`;
+                modal.actions.innerHTML = '<button class="hji-btn" data-close>Close</button>';
+                modal.el.querySelector('[data-close]').onclick = modal.close;
+            };
+        });
+    }
+
     function renderSettings(body){
         const customKeyUrl = 'https://www.torn.com/preferences.php#tab=api?step=addNewKey&title=Happy%20Jump%20Insurance%20Manager&user=messages,newmessages,basic,log';
         body.innerHTML=`
         <div class="hji-help">
           <strong>Settings help</strong>
           <p><b>Provider Name / ID</b> identifies the person actually providing the insurance. These fields stay editable so you can manage policies on behalf of another Torn user.</p>
-          <details><summary>What does “Detect My Torn Account” do?</summary><p>It identifies the account that owns the stored API key and can optionally fill the Provider fields. You can edit them afterward.</p></details>
-          <details><summary>What if the API account and provider are different?</summary><p>The Manager will show a warning. Client setup codes and claim routing use the Provider fields, not the API-key owner.</p></details>
-          <details><summary>Where is the API key stored?</summary><p>Locally by this userscript on the current browser/device. Setup codes and customer-facing data never include it.</p></details>
+          <div class="hji-toolbar" style="margin-top:8px">
+            <button class="hji-btn" data-hji-info-title="Detect My Torn Account" data-hji-info="This identifies the Torn account that owns the stored API key and can fill the Provider fields. You can still edit the Provider Name and ID afterward.">Account detection info</button>
+            <button class="hji-btn" data-hji-info-title="API account vs Provider" data-hji-info="The API-key owner and insurance Provider can be different. Client setup codes and claim routing use the Provider Name and Provider ID fields, not the API-key owner's identity.">Provider info</button>
+            <button class="hji-btn" data-hji-info-title="API key storage" data-hji-info="The API key is stored locally by this userscript on the current browser/device. It is not included in client setup codes or Manager backup exports.">API key info</button>
+          </div>
         </div>
 
         <div class="hji-card">
-          <strong>Provider identity <span class="hji-info" title="The actual person providing the policy. Claims are routed to this Torn ID.">i</span></strong>
+          <strong>Provider identity <span class="hji-info-tip" data-hji-info-title="Information" data-hji-info="The actual person providing the policy. Claims are routed to this Torn ID.">i</span></strong>
           <div class="hji-form" style="margin-top:10px">
             <label title="Editable. This is the insurer shown to the client.">Provider Torn name<input id="set-name" value="${esc(state.settings.providerName||'')}"></label>
             <label title="Editable. Claims generated by the client are addressed to this Torn ID.">Provider Torn ID<input id="set-id" inputmode="numeric" value="${esc(state.settings.providerId||'')}"></label>
@@ -3305,7 +3391,7 @@
         </div>
 
         <div class="hji-card">
-          <strong>Torn API <span class="hji-info" title="Used for reading claim mail and identifying the API-key owner.">i</span></strong>
+          <strong>Torn API <span class="hji-info-tip" data-hji-info-title="Information" data-hji-info="Used for reading claim mail and identifying the API-key owner.">i</span></strong>
           <p class="hji-muted">The custom key requests <b>messages</b>, <b>newmessages</b>, <b>basic</b>, and <b>log</b>. Log access is used only when you press <b>Scan item payments</b>. HJI filters specifically for Torn's Item receive log (4103). The item scanner uses Torn API v2's user log selection filtered to Item receive (4103).</p>
           <div class="hji-help">
             <strong>Log-access note</strong>
@@ -3331,7 +3417,7 @@
         </div>
 
         <div class="hji-card">
-          <strong>Manager options <span class="hji-info" title="These values affect reminders and the suggested scan cadence only.">i</span></strong>
+          <strong>Manager options <span class="hji-info-tip" data-hji-info-title="Information" data-hji-info="These values affect reminders and the suggested scan cadence only.">i</span></strong>
           <div class="hji-form" style="margin-top:10px">
             <label title="Policies ending within this many days show as Due soon.">Due soon warning (days)<input id="set-due" inputmode="numeric" value="${esc(state.settings.dueSoonDays||3)}"></label>
             <label title="A reminder value only; the Manager does not silently scan Torn in the background.">Claim scan interval hint (minutes)<input id="set-poll" inputmode="numeric" value="${esc(state.settings.claimPollMinutes||10)}"></label>
@@ -3339,7 +3425,7 @@
         </div>
 
         <div class="hji-card">
-          <strong>Backup & Restore <span class="hji-info" title="Use this when moving devices, reinstalling, or protecting your insurance database.">i</span></strong>
+          <strong>Backup & Restore <span class="hji-info-tip" data-hji-info-title="Information" data-hji-info="Use this when moving devices, reinstalling, or protecting your insurance database.">i</span></strong>
           <div class="hji-help">
             <p>Backups include customers, policies, renewals, tiers, payments, claims and Manager settings.</p>
             <p><b>The Torn API key is deliberately excluded.</b></p>
@@ -3464,6 +3550,7 @@
         body.querySelector('#set-export').onclick=()=>exportManagerBackup();
 
         body.querySelector('#set-import').onclick=()=>chooseBackupFile();
+        bindInfoTips(body);
     }
 
     function createModal(title){
