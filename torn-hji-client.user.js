@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Client
 // @namespace    torn-hji
-// @version      0.4.5
+// @version      0.4.6
 // @description  Insured-user client for importing Happy Jump policies and preparing structured Torn Mail claims.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -18,7 +18,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.4.5';
+    const VERSION = '0.4.6';
     const PREFIX='torn_hji_client_v2_';
     const LEGACY_PREFIX='torn_hji_client_v1_';
     const CLAIM_PREFIX='[HJI CLAIM]';
@@ -209,6 +209,28 @@
         window.addEventListener('touchcancel', finish, { passive: false });
     }
 
+    function updateClientUiScale(app){
+        if(!app) return;
+
+        const content=app.querySelector('.hc-scale-content');
+        if(!content) return;
+
+        const r=app.getBoundingClientRect();
+
+        // Keep at least a 300x300 logical layout. When the physical window is
+        // smaller, scale the whole Client UI rather than crushing/reflowing it.
+        const widthScale=r.width/300;
+        const heightScale=r.height/300;
+        const scale=Math.max(0.5,Math.min(1,widthScale,heightScale));
+
+        content.style.transform=`scale(${scale})`;
+        content.style.width=`${100/scale}%`;
+        content.style.height=`${100/scale}%`;
+
+        app.style.setProperty('--hc-ui-scale',String(scale));
+        app.classList.toggle('hc-ui-scaled',scale<0.999);
+    }
+
     function makeResizable(el, grip, storageKey) {
         const saved = storage.get(storageKey, null);
         if (saved?.width && saved?.height) {
@@ -237,6 +259,7 @@
             const maxH = Math.max(minH, window.innerHeight * 0.92);
             el.style.width = `${Math.max(minW, Math.min(startW + p.x - startX, maxW))}px`;
             el.style.height = `${Math.max(minH, Math.min(startH + p.y - startY, maxH))}px`;
+            updateClientUiScale(el);
             if (e.cancelable) e.preventDefault();
         };
         const finish = () => {
@@ -245,6 +268,8 @@
             const r = el.getBoundingClientRect();
             storage.set(storageKey, { width: Math.round(r.width), height: Math.round(r.height) });
         };
+
+        updateClientUiScale(el);
 
         grip.addEventListener('mousedown', begin);
         window.addEventListener('mousemove', move, { passive: false });
@@ -488,8 +513,15 @@
         :root{--hc-bg:#202020;--hc-panel:#2b2b2b;--hc-border:#4a4a4a;--hc-text:#e8e8e8;--hc-muted:#aaa;--hc-input:#181818}
         #hji-client-launch{position:fixed;left:16px;bottom:18px;z-index:999999;background:linear-gradient(#4a4a4a,#303030);color:#fff;border:1px solid #666;border-radius:5px;padding:9px 13px;font:600 13px Arial,sans-serif;box-shadow:0 2px 8px #0009;cursor:grab;user-select:none;touch-action:none}
         #hji-client-overlay{position:fixed;inset:0;z-index:1000000;background:transparent;pointer-events:none}
-        #hji-client-app{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(700px,90vw);height:min(620px,78vh);min-width:150px;min-height:150px;max-width:97vw;max-height:92vh;overflow:hidden;background:var(--hc-bg);color:var(--hc-text);border:1px solid #555;border-radius:7px;font:14px Arial,sans-serif;box-shadow:0 12px 35px #000c;pointer-events:auto;resize:both;display:flex;flex-direction:column}
+        #hji-client-app{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(700px,90vw);height:min(620px,78vh);min-width:150px;min-height:150px;max-width:97vw;max-height:92vh;overflow:hidden;background:var(--hc-bg);color:var(--hc-text);border:1px solid #555;border-radius:7px;font:14px Arial,sans-serif;box-shadow:0 12px 35px #000c;pointer-events:auto;resize:both}
         #hji-client-app.hc-compact{width:min(350px,86vw);height:min(310px,66vh)}
+        .hc-scale-content{position:absolute;left:0;top:0;transform-origin:top left;display:flex;flex-direction:column;overflow:hidden;background:var(--hc-bg);color:var(--hc-text)}
+        #hji-client-app.hc-ui-scaled .hc-head h2{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        #hji-client-app.hc-ui-scaled .hc-head>div:first-child{min-width:0;flex:1}
+        #hji-client-app.hc-ui-scaled .hc-head .hc-muted{display:none}
+        #hji-client-app.hc-ui-scaled .hc-head{padding:7px 8px}
+        #hji-client-app.hc-ui-scaled .hc-tab{padding:5px 7px}
+        #hji-client-app.hc-ui-scaled .hc-body{padding:8px}
         .hc-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;background:linear-gradient(#3b3b3b,#292929);border-bottom:1px solid #555;cursor:move;user-select:none;touch-action:none}.hc-head h2{margin:0;color:#f5f5f5;font-size:18px}.hc-head-actions{display:flex;gap:6px}
         .hc-tabs{display:flex;gap:4px;padding:7px;background:#252525;border-bottom:1px solid #444;overflow:auto}.hc-tab{background:#333;color:#ddd;border:1px solid #555;border-radius:4px;padding:7px 10px;white-space:nowrap}.hc-tab.active{background:#555;color:#fff}.hc-body{padding:12px;overflow:auto;flex:1;background:var(--hc-bg);color:var(--hc-text)}
         .hc-claim-toggle{width:100%;display:flex;justify-content:space-between;align-items:center;gap:10px;background:#303030;color:#f2f2f2;border:1px solid #505050;border-radius:4px;padding:9px 10px;cursor:pointer;text-align:left}
@@ -519,7 +551,7 @@
           .hc-tab{padding:5px 7px}
           .hc-btn,.hc-size,.hc-close{padding:6px 7px}
         }
-        .hc-resize-grip{position:absolute;right:0;bottom:0;width:30px;height:30px;z-index:20;cursor:nwse-resize;touch-action:none}.hc-resize-grip:after{content:'↘';position:absolute;right:5px;bottom:3px;color:#bbb;font-size:18px}
+        .hc-resize-grip{position:absolute;right:0;bottom:0;width:30px;height:30px;z-index:50;cursor:nwse-resize;touch-action:none}.hc-resize-grip:after{content:'↘';position:absolute;right:5px;bottom:3px;color:#bbb;font-size:18px}
         @media(max-width:600px){#hji-client-launch{left:9px;bottom:10px;padding:8px 11px}#hji-client-app{width:90vw;height:72vh;max-height:82vh}#hji-client-app.hc-compact{width:84vw;height:60vh}.hc-grid,.hc-form{grid-template-columns:1fr}.hc-form .wide{grid-column:auto}.hc-head h2{font-size:15px}}
         `;document.head.appendChild(s);
     }
@@ -933,12 +965,14 @@
             overlay=document.createElement('div');
             overlay.id='hji-client-overlay';
             overlay.innerHTML=`<div id="hji-client-app">
-              <div class="hc-head">
-                <div><h2>🛡️ My Happy Jump Insurance</h2><div class="hc-muted">v${esc(VERSION)} · drag this header · resize from the lower-right</div></div>
-                <div class="hc-head-actions"><button class="hc-size">Size</button><button class="hc-close">Close</button></div>
+              <div class="hc-scale-content">
+                <div class="hc-head">
+                  <div><h2>🛡️ My Happy Jump Insurance</h2><div class="hc-muted">v${esc(VERSION)} · drag this header · resize from the lower-right</div></div>
+                  <div class="hc-head-actions"><button class="hc-size">Size</button><button class="hc-close">Close</button></div>
+                </div>
+                ${clientTabsHtml()}
+                <div class="hc-body"></div>
               </div>
-              ${clientTabsHtml()}
-              <div class="hc-body"></div>
               <div class="hc-resize-grip" title="Drag to resize"></div>
             </div>`;
 
@@ -966,6 +1000,7 @@
                     height:Math.round(r.height)
                 });
                 storage.set('windowCompact',compact);
+                updateClientUiScale(app);
             };
 
             overlay.querySelectorAll('[data-client-tab]').forEach(b=>{
@@ -985,12 +1020,17 @@
                 app.style.height=`${Math.max(150,Math.min(310,window.innerHeight*0.66))}px`;
             }
 
+            updateClientUiScale(app);
             renderClientView();
         }catch(e){
             console.error('[HJI Client] UI error:',e);
             if(overlay)overlay.innerHTML=`<div id="hji-client-app"><div class="hc-body"><div class="hc-help"><strong>HJI Client UI error</strong><p>${esc(e?.message||e)}</p></div></div></div>`;
         }
     }
+
+    window.addEventListener('resize',()=>{
+        updateClientUiScale(overlay?.querySelector('#hji-client-app'));
+    });
 
     function policyHtml(p){
         const [label,rowClass,statusClass]=policyStatus(p);
