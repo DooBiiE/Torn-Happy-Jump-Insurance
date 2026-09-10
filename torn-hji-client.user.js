@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Torn Happy Jump Insurance Client
 // @namespace    torn-hji
-// @version      0.4.4
+// @version      0.4.5
 // @description  Insured-user client for importing Happy Jump policies and preparing structured Torn Mail claims.
 // @author       DooBiiE
 // @match        https://www.torn.com/*
@@ -18,7 +18,7 @@
 (() => {
     'use strict';
 
-    const VERSION = '0.4.4';
+    const VERSION = '0.4.5';
     const PREFIX='torn_hji_client_v2_';
     const LEGACY_PREFIX='torn_hji_client_v1_';
     const CLAIM_PREFIX='[HJI CLAIM]';
@@ -232,7 +232,7 @@
         const move = e => {
             if (!resizing) return;
             const p = point(e);
-            const minW = 300, minH = 300;
+            const minW = 150, minH = 150;
             const maxW = Math.max(minW, window.innerWidth * 0.97);
             const maxH = Math.max(minH, window.innerHeight * 0.92);
             el.style.width = `${Math.max(minW, Math.min(startW + p.x - startX, maxW))}px`;
@@ -488,8 +488,8 @@
         :root{--hc-bg:#202020;--hc-panel:#2b2b2b;--hc-border:#4a4a4a;--hc-text:#e8e8e8;--hc-muted:#aaa;--hc-input:#181818}
         #hji-client-launch{position:fixed;left:16px;bottom:18px;z-index:999999;background:linear-gradient(#4a4a4a,#303030);color:#fff;border:1px solid #666;border-radius:5px;padding:9px 13px;font:600 13px Arial,sans-serif;box-shadow:0 2px 8px #0009;cursor:grab;user-select:none;touch-action:none}
         #hji-client-overlay{position:fixed;inset:0;z-index:1000000;background:transparent;pointer-events:none}
-        #hji-client-app{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(700px,90vw);height:min(620px,78vh);min-width:300px;min-height:300px;max-width:97vw;max-height:92vh;overflow:hidden;background:var(--hc-bg);color:var(--hc-text);border:1px solid #555;border-radius:7px;font:14px Arial,sans-serif;box-shadow:0 12px 35px #000c;pointer-events:auto;resize:both;display:flex;flex-direction:column}
-        #hji-client-app.hc-compact{width:min(560px,86vw);height:min(500px,66vh)}
+        #hji-client-app{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(700px,90vw);height:min(620px,78vh);min-width:150px;min-height:150px;max-width:97vw;max-height:92vh;overflow:hidden;background:var(--hc-bg);color:var(--hc-text);border:1px solid #555;border-radius:7px;font:14px Arial,sans-serif;box-shadow:0 12px 35px #000c;pointer-events:auto;resize:both;display:flex;flex-direction:column}
+        #hji-client-app.hc-compact{width:min(350px,86vw);height:min(310px,66vh)}
         .hc-head{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 12px;background:linear-gradient(#3b3b3b,#292929);border-bottom:1px solid #555;cursor:move;user-select:none;touch-action:none}.hc-head h2{margin:0;color:#f5f5f5;font-size:18px}.hc-head-actions{display:flex;gap:6px}
         .hc-tabs{display:flex;gap:4px;padding:7px;background:#252525;border-bottom:1px solid #444;overflow:auto}.hc-tab{background:#333;color:#ddd;border:1px solid #555;border-radius:4px;padding:7px 10px;white-space:nowrap}.hc-tab.active{background:#555;color:#fff}.hc-body{padding:12px;overflow:auto;flex:1;background:var(--hc-bg);color:var(--hc-text)}
         .hc-claim-toggle{width:100%;display:flex;justify-content:space-between;align-items:center;gap:10px;background:#303030;color:#f2f2f2;border:1px solid #505050;border-radius:4px;padding:9px 10px;cursor:pointer;text-align:left}
@@ -508,6 +508,17 @@
         .hc-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.hc-muted{font-size:12px;color:#aaa!important}.hc-help{background:#252d33;border:1px solid #465966;border-radius:5px;padding:10px;margin-bottom:10px;color:#e1e1e1}.hc-help p{margin:5px 0}.hc-help details{margin-top:6px}.hc-help summary{cursor:pointer;font-weight:700;color:#dceaf3}
         .hc-policy-active{background:#243329;border-left:4px solid #4fa96c}.hc-policy-due{background:#403823;border-left:4px solid #d6aa43}.hc-policy-expired{background:#422828;border-left:4px solid #c94b4b}.hc-policy-cancelled{background:#303030;border-left:4px solid #777;opacity:.72}.hc-policy-used{background:#30343a;border-left:4px solid #718096;opacity:.82}
         .hc-status-active{color:#75d28d;font-weight:700}.hc-status-due{color:#f0c866;font-weight:700}.hc-status-expired{color:#f18181;font-weight:700}.hc-status-muted{color:#aaa;font-weight:700}
+        @media(max-width:420px){
+          #hji-client-app{font-size:12px}
+          .hc-head{padding:7px 8px}
+          .hc-head h2{font-size:15px}
+          .hc-body{padding:7px}
+          .hc-grid{grid-template-columns:1fr}
+          .hc-form{grid-template-columns:1fr}
+          .hc-form .wide{grid-column:1}
+          .hc-tab{padding:5px 7px}
+          .hc-btn,.hc-size,.hc-close{padding:6px 7px}
+        }
         .hc-resize-grip{position:absolute;right:0;bottom:0;width:30px;height:30px;z-index:20;cursor:nwse-resize;touch-action:none}.hc-resize-grip:after{content:'↘';position:absolute;right:5px;bottom:3px;color:#bbb;font-size:18px}
         @media(max-width:600px){#hji-client-launch{left:9px;bottom:10px;padding:8px 11px}#hji-client-app{width:90vw;height:72vh;max-height:82vh}#hji-client-app.hc-compact{width:84vw;height:60vh}.hc-grid,.hc-form{grid-template-columns:1fr}.hc-form .wide{grid-column:auto}.hc-head h2{font-size:15px}}
         `;document.head.appendChild(s);
@@ -935,7 +946,27 @@
 
             const app=overlay.querySelector('#hji-client-app');
             overlay.querySelector('.hc-close').onclick=()=>{overlay.remove();overlay=null};
-            overlay.querySelector('.hc-size').onclick=()=>app.classList.toggle('hc-compact');
+            overlay.querySelector('.hc-size').onclick=()=>{
+                const compact=app.dataset.compact!=='true';
+
+                app.dataset.compact=compact?'true':'false';
+                app.classList.toggle('hc-compact',compact);
+
+                if(compact){
+                    app.style.width=`${Math.max(150,Math.min(350,window.innerWidth*0.86))}px`;
+                    app.style.height=`${Math.max(150,Math.min(310,window.innerHeight*0.66))}px`;
+                }else{
+                    app.style.width=`${Math.max(150,Math.min(700,window.innerWidth*0.90))}px`;
+                    app.style.height=`${Math.max(150,Math.min(620,window.innerHeight*0.78))}px`;
+                }
+
+                const r=app.getBoundingClientRect();
+                storage.set('windowSize',{
+                    width:Math.round(r.width),
+                    height:Math.round(r.height)
+                });
+                storage.set('windowCompact',compact);
+            };
 
             overlay.querySelectorAll('[data-client-tab]').forEach(b=>{
                 b.onclick=()=>{
@@ -946,6 +977,14 @@
 
             makeDraggable(app,overlay.querySelector('.hc-head'),'windowPos');
             makeResizable(app,overlay.querySelector('.hc-resize-grip'),'windowSize');
+
+            if(storage.get('windowCompact',false)===true){
+                app.dataset.compact='true';
+                app.classList.add('hc-compact');
+                app.style.width=`${Math.max(150,Math.min(350,window.innerWidth*0.86))}px`;
+                app.style.height=`${Math.max(150,Math.min(310,window.innerHeight*0.66))}px`;
+            }
+
             renderClientView();
         }catch(e){
             console.error('[HJI Client] UI error:',e);
